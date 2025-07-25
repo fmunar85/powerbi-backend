@@ -1,245 +1,552 @@
 const express = require('express');
 const cors = require('cors');
+const sql = require('mssql');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Middleware
+// Configuración de CORS
 app.use(cors({
-    origin: ['https://powerbi-dashboards-1234.netlify.app', 'http://localhost:3000'],
+    origin: ['https://powerbi-dashboards-1234.netlify.app', 'http://localhost:3000', 'http://127.0.0.1:5500'],
     credentials: true
 }));
+
 app.use(express.json());
 
-// Health check
+// Configuración de base de datos SQL Server
+const dbConfig = {
+    user: 'sa',
+    password: 'TJTQ',
+    server: '192.168.30.36',
+    database: 'dbPowerbi',
+    options: {
+        encrypt: false,
+        trustServerCertificate: true,
+        enableArithAbort: true,
+        connectTimeout: 30000,
+        requestTimeout: 30000
+    },
+    pool: {
+        max: 10,
+        min: 0,
+        idleTimeoutMillis: 30000
+    }
+};
+
+let pool = null;
+
+// Función para inicializar la base de datos
+async function initializeDatabase() {
+    try {
+        console.log('🔄 Conectando a SQL Server...');
+        pool = await sql.connect(dbConfig);
+        console.log('✅ Conectado a SQL Server');
+        
+        // Verificar y crear tablas si no existen
+        await createTablesIfNotExist();
+        await insertDefaultData();
+        
+        console.log('✅ Base de datos inicializada correctamente');
+        return true;
+    } catch (error) {
+        console.error('❌ Error al conectar con SQL Server:', error.message);
+        pool = null;
+        return false;
+    }
+}
+
+// Función para crear tablas si no existen
+async function createTablesIfNotExist() {
+    try {
+        console.log('🔄 Verificando tablas...');
+        
+        // Crear tabla usuarios
+        await pool.request().query(`
+            IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[usuarios]') AND type in (N'U'))
+            BEGIN
+                CREATE TABLE [dbo].[usuarios] (
+                    [id] [int] IDENTITY(1,1) NOT NULL,
+                    [nombre] [nvarchar](100) NOT NULL,
+                    [apellido] [nvarchar](100) NOT NULL,
+                    [email] [nvarchar](255) NOT NULL UNIQUE,
+                    [password] [nvarchar](255) NOT NULL,
+                    [admin] [bit] NOT NULL DEFAULT 0,
+                    [activo] [bit] NOT NULL DEFAULT 1,
+                    [fecha_creacion] [datetime] NOT NULL DEFAULT GETDATE(),
+                    [fecha_actualizacion] [datetime] NOT NULL DEFAULT GETDATE(),
+                    CONSTRAINT [PK_usuarios] PRIMARY KEY CLUSTERED ([id] ASC)
+                );
+            END
+        `);
+
+        // Crear tabla reportes
+        await pool.request().query(`
+            IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[reportes]') AND type in (N'U'))
+            BEGIN
+                CREATE TABLE [dbo].[reportes] (
+                    [id] [int] IDENTITY(1,1) NOT NULL,
+                    [nombre] [nvarchar](255) NOT NULL,
+                    [url] [nvarchar](1000) NOT NULL,
+                    [descripcion] [nvarchar](500) NULL,
+                    [refresh_interval] [int] NOT NULL DEFAULT 60,
+                    [activo] [bit] NOT NULL DEFAULT 1,
+                    [usuario_creador] [int] NULL,
+                    [fecha_creacion] [datetime] NOT NULL DEFAULT GETDATE(),
+                    [fecha_actualizacion] [datetime] NOT NULL DEFAULT GETDATE(),
+                    CONSTRAINT [PK_reportes] PRIMARY KEY CLUSTERED ([id] ASC)
+                );
+            END
+        `);
+
+        // Crear tabla permisos
+        await pool.request().query(`
+            IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[permisos]') AND type in (N'U'))
+            BEGIN
+                CREATE TABLE [dbo].[permisos] (
+                    [id] [int] IDENTITY(1,1) NOT NULL,
+                    [usuario_id] [int] NOT NULL,
+                    [reporte_id] [int] NOT NULL,
+                    [puede_ver] [bit] NOT NULL DEFAULT 1,
+                    [puede_editar] [bit] NOT NULL DEFAULT 0,
+                    [fecha_asignacion] [datetime] NOT NULL DEFAULT GETDATE(),
+                    CONSTRAINT [PK_permisos] PRIMARY KEY CLUSTERED ([id] ASC)
+                );
+            END
+        `);
+
+        // Crear tabla actividad
+        await pool.request().query(`
+            IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[actividad]') AND type in (N'U'))
+            BEGIN
+                CREATE TABLE [dbo].[actividad] (
+                    [id] [int] IDENTITY(1,1) NOT NULL,
+                    [usuario_id] [int] NULL,
+                    [accion] [nvarchar](100) NOT NULL,
+                    [detalle] [nvarchar](500) NULL,
+                    [fecha] [datetime] NOT NULL DEFAULT GETDATE(),
+                    [ip_address] [nvarchar](50) NULL,
+                    CONSTRAINT [PK_actividad] PRIMARY KEY CLUSTERED ([id] ASC)
+                );
+            END
+        `);
+
+        console.log('✅ Tablas verificadas/creadas');
+    } catch (error) {
+        console.error('❌ Error al crear tablas:', error.message);
+        throw error;
+    }
+}
+
+// Función para insertar datos por defecto
+async function insertDefaultData() {
+    try {
+        console.log('🔄 Insertando datos por defecto...');
+        
+        // Insertar usuarios por defecto
+        const checkAdmin = await pool.request()
+            .input('email', sql.NVarChar, 'admin@powerbi.com')
+            .query('SELECT COUNT(*) as count FROM usuarios WHERE email = @email');
+        
+        if (checkAdmin.recordset[0].count === 0) {
+            await pool.request()
+                .input('nombre', sql.NVarChar, 'Admin')
+                .input('apellido', sql.NVarChar, 'Sistema')
+                .input('email', sql.NVarChar, 'admin@powerbi.com')
+                .input('password', sql.NVarChar, 'admin123')
+                .input('admin', sql.Bit, true)
+                .query(`
+                    INSERT INTO usuarios (nombre, apellido, email, password, admin, activo)
+                    VALUES (@nombre, @apellido, @email, @password, @admin, 1)
+                `);
+            console.log('✅ Usuario administrador creado');
+        }
+
+        const checkUser = await pool.request()
+            .input('email', sql.NVarChar, 'usuario@powerbi.com')
+            .query('SELECT COUNT(*) as count FROM usuarios WHERE email = @email');
+        
+        if (checkUser.recordset[0].count === 0) {
+            await pool.request()
+                .input('nombre', sql.NVarChar, 'Usuario')
+                .input('apellido', sql.NVarChar, 'Demo')
+                .input('email', sql.NVarChar, 'usuario@powerbi.com')
+                .input('password', sql.NVarChar, 'user123')
+                .input('admin', sql.Bit, false)
+                .query(`
+                    INSERT INTO usuarios (nombre, apellido, email, password, admin, activo)
+                    VALUES (@nombre, @apellido, @email, @password, @admin, 1)
+                `);
+            console.log('✅ Usuario demo creado');
+        }
+
+        // Insertar reportes por defecto
+        const reportes = [
+            {
+                nombre: 'Ventas Dashboard',
+                url: 'https://app.powerbi.com/view?r=eyJrIjoiYzg4YWE1YjctMjQ3OC00Y2U5LTkzOWQtYWY5OTJjZGMwOGQ5IiwidCI6IjljOWEzMGRlLWQzZWUtNDJmNy04NzJiLTNjYjkyNzk1OGE4YyIsImMiOjl9',
+                descripcion: 'Dashboard principal de análisis de ventas',
+                refresh_interval: 120
+            },
+            {
+                nombre: 'Finanzas Dashboard',
+                url: 'https://app.powerbi.com/view?r=eyJrIjoiYzg4YWE1YjctMjQ3OC00Y2U5LTkzOWQtYWY5OTJjZGMwOGQ5IiwidCI6IjljOWEzMGRlLWQzZWUtNDJmNy04NzJiLTNjYjkyNzk1OGE4YyIsImMiOjl9',
+                descripcion: 'Reportes financieros y análisis de presupuesto',
+                refresh_interval: 300
+            },
+            {
+                nombre: 'Marketing Dashboard',
+                url: 'https://app.powerbi.com/view?r=eyJrIjoiYzg4YWE1YjctMjQ3OC00Y2U5LTkzOWQtYWY5OTJjZGMwOGQ5IiwidCI6IjljOWEzMGRlLWQzZWUtNDJmNy04NzJiLTNjYjkyNzk1OGE4YyIsImMiOjl9',
+                descripcion: 'Métricas de marketing y análisis de campañas',
+                refresh_interval: 180
+            }
+        ];
+
+        for (const reporte of reportes) {
+            const checkReporte = await pool.request()
+                .input('nombre', sql.NVarChar, reporte.nombre)
+                .query('SELECT COUNT(*) as count FROM reportes WHERE nombre = @nombre');
+            
+            if (checkReporte.recordset[0].count === 0) {
+                await pool.request()
+                    .input('nombre', sql.NVarChar, reporte.nombre)
+                    .input('url', sql.NVarChar, reporte.url)
+                    .input('descripcion', sql.NVarChar, reporte.descripcion)
+                    .input('refresh_interval', sql.Int, reporte.refresh_interval)
+                    .input('usuario_creador', sql.Int, 1)
+                    .query(`
+                        INSERT INTO reportes (nombre, url, descripcion, refresh_interval, activo, usuario_creador)
+                        VALUES (@nombre, @url, @descripcion, @refresh_interval, 1, @usuario_creador)
+                    `);
+                console.log(`✅ Reporte ${reporte.nombre} creado`);
+            }
+        }
+
+        console.log('✅ Datos por defecto insertados');
+    } catch (error) {
+        console.error('❌ Error al insertar datos por defecto:', error.message);
+        throw error;
+    }
+}
+
+// Middleware para verificar conexión DB
+async function checkDbConnection(req, res, next) {
+    if (!pool) {
+        return res.status(503).json({
+            success: false,
+            message: 'Base de datos no disponible'
+        });
+    }
+    next();
+}
+
+// Función para ejecutar queries con manejo de errores
+async function executeQuery(query, inputs = {}) {
+    try {
+        const request = pool.request();
+        
+        // Agregar inputs al request
+        for (const [key, value] of Object.entries(inputs)) {
+            request.input(key, value);
+        }
+        
+        const result = await request.query(query);
+        return result.recordset;
+    } catch (error) {
+        console.error('Error en query:', error.message);
+        throw error;
+    }
+}
+
+// =============================================
+// RUTAS DE LA API
+// =============================================
+
+// Ruta de health check
 app.get('/health', (req, res) => {
-    res.json({
-        status: 'ok',
+    const status = {
+        status: 'OK',
         timestamp: new Date().toISOString(),
-        uptime: process.uptime(),
-        version: '1.0.0-node18',
-        mode: 'fallback'
-    });
+        database: pool ? 'Conectada' : 'Desconectada',
+        server: 'Render - Funcionando'
+    };
+    res.json(status);
 });
 
-// Login fallback con credenciales hardcodeadas
-app.post('/api/login', async (req, res) => {
+// Ruta de login
+app.post('/login', async (req, res) => {
     try {
-        const { mail, password } = req.body;
-
-        if (!mail || !password) {
+        const { email, password } = req.body;
+        
+        if (!email || !password) {
             return res.status(400).json({
                 success: false,
-                error: 'Email y contraseña son requeridos'
+                message: 'Email y contraseña son requeridos'
             });
         }
 
-        console.log(`🔄 Login attempt: ${mail}`);
+        if (pool) {
+            // Autenticación con base de datos
+            const users = await executeQuery(
+                'SELECT * FROM usuarios WHERE email = @email AND password = @password AND activo = 1',
+                { email: sql.NVarChar(255), password: sql.NVarChar(255) }
+            );
 
-        // Credenciales hardcodeadas para funcionamiento inmediato
-        if (mail === 'admin@powerbi.com' && password === 'admin123') {
-            const token = 'token_admin_' + Date.now();
-            console.log('✅ Admin login successful');
+            if (users.length > 0) {
+                const user = users[0];
+                const token = 'db_' + Buffer.from(email + ':' + Date.now()).toString('base64');
+                
+                // Registrar actividad
+                await executeQuery(
+                    'INSERT INTO actividad (usuario_id, accion, detalle, ip_address) VALUES (@usuario_id, @accion, @detalle, @ip)',
+                    {
+                        usuario_id: sql.Int(user.id),
+                        accion: sql.NVarChar(100),
+                        detalle: sql.NVarChar(500),
+                        ip: sql.NVarChar(50)
+                    }
+                );
+
+                return res.json({
+                    success: true,
+                    token: token,
+                    user: {
+                        id: user.id,
+                        nombre: user.nombre,
+                        apellido: user.apellido,
+                        email: user.email,
+                        admin: user.admin
+                    }
+                });
+            }
+        }
+
+        // Fallback: autenticación local
+        const localUsers = [
+            { id: 1, email: 'admin@powerbi.com', password: 'admin123', nombre: 'Admin', apellido: 'Sistema', admin: true },
+            { id: 2, email: 'usuario@powerbi.com', password: 'user123', nombre: 'Usuario', apellido: 'Demo', admin: false }
+        ];
+
+        const user = localUsers.find(u => u.email.toLowerCase() === email.toLowerCase() && u.password === password);
+        
+        if (user) {
+            const token = 'local_' + Buffer.from(email + ':' + Date.now()).toString('base64');
             return res.json({
                 success: true,
                 token: token,
                 user: {
-                    id: 1,
-                    nombre: 'Administrador',
-                    apellido: 'Sistema',
-                    mail: 'admin@powerbi.com',
-                    admin: true
+                    id: user.id,
+                    nombre: user.nombre,
+                    apellido: user.apellido,
+                    email: user.email,
+                    admin: user.admin
                 }
-            });
-        } else if (mail === 'usuario@powerbi.com' && password === 'user123') {
-            const token = 'token_user_' + Date.now();
-            console.log('✅ User login successful');
-            return res.json({
-                success: true,
-                token: token,
-                user: {
-                    id: 2,
-                    nombre: 'Usuario',
-                    apellido: 'Demo',
-                    mail: 'usuario@powerbi.com',
-                    admin: false
-                }
-            });
-        } else {
-            console.log('❌ Invalid credentials');
-            return res.status(401).json({
-                success: false,
-                error: 'Credenciales incorrectas'
             });
         }
+
+        res.status(401).json({
+            success: false,
+            message: 'Credenciales incorrectas'
+        });
 
     } catch (error) {
         console.error('Error en login:', error);
         res.status(500).json({
             success: false,
-            error: 'Error interno del servidor'
+            message: 'Error interno del servidor'
         });
     }
 });
 
-// Verify token
-app.get('/api/verify', (req, res) => {
+// Ruta para obtener reportes del usuario
+app.get('/reports/user/:userId', checkDbConnection, async (req, res) => {
     try {
-        const authHeader = req.headers['authorization'];
-        const token = authHeader && authHeader.split(' ')[1];
+        const userId = req.params.userId;
+        
+        const reportes = await executeQuery(`
+            SELECT r.*, p.puede_ver, p.puede_editar
+            FROM reportes r
+            INNER JOIN permisos p ON r.id = p.reporte_id
+            WHERE p.usuario_id = @userId AND r.activo = 1 AND p.puede_ver = 1
+            ORDER BY r.nombre
+        `, { userId: sql.Int(userId) });
 
-        if (!token) {
-            return res.status(401).json({ error: 'Token requerido' });
-        }
-
-        // Verificar tokens básicos
-        if (token.startsWith('token_admin_')) {
-            return res.json({
-                success: true,
-                user: {
-                    id: 1,
-                    nombre: 'Administrador',
-                    apellido: 'Sistema',
-                    mail: 'admin@powerbi.com',
-                    admin: true
-                }
-            });
-        } else if (token.startsWith('token_user_')) {
-            return res.json({
-                success: true,
-                user: {
-                    id: 2,
-                    nombre: 'Usuario',
-                    apellido: 'Demo',
-                    mail: 'usuario@powerbi.com',
-                    admin: false
-                }
-            });
-        } else {
-            return res.status(403).json({ error: 'Token inválido' });
-        }
-
+        res.json(reportes);
     } catch (error) {
-        console.error('Error verificando token:', error);
-        res.status(500).json({ error: 'Error interno del servidor' });
+        console.error('Error al obtener reportes:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error al obtener reportes'
+        });
     }
 });
 
-// Logout
-app.post('/api/logout', (req, res) => {
-    res.json({ success: true, message: 'Logout exitoso' });
+// Ruta para crear nuevo reporte
+app.post('/reports', checkDbConnection, async (req, res) => {
+    try {
+        const { nombre, url, descripcion, refresh_interval, usuario_id } = req.body;
+        
+        const result = await pool.request()
+            .input('nombre', sql.NVarChar, nombre)
+            .input('url', sql.NVarChar, url)
+            .input('descripcion', sql.NVarChar, descripcion || '')
+            .input('refresh_interval', sql.Int, refresh_interval || 60)
+            .input('usuario_creador', sql.Int, usuario_id)
+            .query(`
+                INSERT INTO reportes (nombre, url, descripcion, refresh_interval, activo, usuario_creador)
+                OUTPUT INSERTED.id
+                VALUES (@nombre, @url, @descripcion, @refresh_interval, 1, @usuario_creador)
+            `);
+
+        const reporteId = result.recordset[0].id;
+
+        // Asignar permiso al usuario creador
+        await pool.request()
+            .input('usuario_id', sql.Int, usuario_id)
+            .input('reporte_id', sql.Int, reporteId)
+            .query(`
+                INSERT INTO permisos (usuario_id, reporte_id, puede_ver, puede_editar)
+                VALUES (@usuario_id, @reporte_id, 1, 1)
+            `);
+
+        res.json({
+            success: true,
+            message: 'Reporte creado exitosamente',
+            reporteId: reporteId
+        });
+    } catch (error) {
+        console.error('Error al crear reporte:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error al crear reporte'
+        });
+    }
 });
 
-// Admin stats
-app.get('/api/admin/stats', (req, res) => {
-    res.json({
-        success: true,
-        stats: {
-            totalUsuarios: 2,
-            totalAdmins: 1,
-            totalReportes: 1,
-            totalPermisos: 0
-        }
-    });
+// Ruta para eliminar reporte
+app.delete('/reports/:id', checkDbConnection, async (req, res) => {
+    try {
+        const reporteId = req.params.id;
+        
+        // Eliminar permisos primero
+        await pool.request()
+            .input('reporte_id', sql.Int, reporteId)
+            .query('DELETE FROM permisos WHERE reporte_id = @reporte_id');
+
+        // Eliminar reporte
+        await pool.request()
+            .input('id', sql.Int, reporteId)
+            .query('DELETE FROM reportes WHERE id = @id');
+
+        res.json({
+            success: true,
+            message: 'Reporte eliminado exitosamente'
+        });
+    } catch (error) {
+        console.error('Error al eliminar reporte:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error al eliminar reporte'
+        });
+    }
 });
 
-// Admin usuarios
-app.get('/api/admin/usuarios', (req, res) => {
+// Rutas de administración
+app.get('/admin/stats', checkDbConnection, async (req, res) => {
+    try {
+        const stats = await executeQuery(`
+            SELECT 
+                (SELECT COUNT(*) FROM usuarios) as totalUsers,
+                (SELECT COUNT(*) FROM usuarios WHERE activo = 1) as activeUsers,
+                (SELECT COUNT(*) FROM reportes WHERE activo = 1) as totalReports,
+                1 as activeSessions
+        `);
+
+        res.json(stats[0]);
+    } catch (error) {
+        console.error('Error al obtener estadísticas:', error);
+        res.json({
+            totalUsers: 2,
+            activeUsers: 2,
+            totalReports: 3,
+            activeSessions: 1
+        });
+    }
+});
+
+app.get('/admin/users', checkDbConnection, async (req, res) => {
+    try {
+        const users = await executeQuery('SELECT id, nombre, apellido, email, admin, activo FROM usuarios ORDER BY nombre');
+        res.json(users);
+    } catch (error) {
+        console.error('Error al obtener usuarios:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error al obtener usuarios'
+        });
+    }
+});
+
+app.get('/admin/reports', checkDbConnection, async (req, res) => {
+    try {
+        const reports = await executeQuery('SELECT * FROM reportes ORDER BY nombre');
+        res.json(reports);
+    } catch (error) {
+        console.error('Error al obtener reportes:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error al obtener reportes'
+        });
+    }
+});
+
+// Ruta para endpoints disponibles
+app.get('/', (req, res) => {
     res.json({
-        success: true,
-        usuarios: [
-            {
-                id: 1,
-                nombre: 'Administrador',
-                apellido: 'Sistema',
-                mail: 'admin@powerbi.com',
-                admin: true,
-                activo: true,
-                fecha_creacion: new Date().toISOString()
-            },
-            {
-                id: 2,
-                nombre: 'Usuario',
-                apellido: 'Demo',
-                mail: 'usuario@powerbi.com',
-                admin: false,
-                activo: true,
-                fecha_creacion: new Date().toISOString()
-            }
+        message: 'PowerBI Backend API',
+        version: '2.0',
+        database: pool ? 'Conectada' : 'Desconectada',
+        endpoints: [
+            'GET /health - Estado del servidor',
+            'POST /login - Autenticación',
+            'GET /reports/user/:userId - Reportes del usuario',
+            'POST /reports - Crear reporte',
+            'DELETE /reports/:id - Eliminar reporte',
+            'GET /admin/stats - Estadísticas',
+            'GET /admin/users - Lista de usuarios',
+            'GET /admin/reports - Lista de reportes'
         ]
     });
 });
 
-// Admin reportes
-app.get('/api/admin/reportes', (req, res) => {
-    res.json({
-        success: true,
-        reportes: [
-            {
-                id: 1,
-                titulo: 'Dashboard Principal',
-                descripcion: 'Dashboard principal de Power BI',
-                url: 'https://app.powerbi.com/reportEmbed?reportId=sample',
-                intervalo_refresh: 30,
-                activo: true,
-                creado_por_nombre: 'Administrador Sistema',
-                fecha_creacion: new Date().toISOString()
-            }
-        ]
+// Inicializar servidor
+async function startServer() {
+    // Intentar conectar a la base de datos
+    const dbConnected = await initializeDatabase();
+    
+    if (!dbConnected) {
+        console.log('⚠️  Servidor iniciado sin conexión a base de datos (modo fallback)');
+    }
+
+    app.listen(PORT, () => {
+        console.log(`🚀 Servidor corriendo en puerto ${PORT}`);
+        console.log(`🌐 Endpoints disponibles en https://powerbi-backend-vxjd.onrender.com`);
+        console.log(`📊 Estado de DB: ${pool ? 'Conectada' : 'Desconectada'}`);
     });
+}
+
+// Manejar cierre del servidor
+process.on('SIGINT', async () => {
+    console.log('Cerrando servidor...');
+    if (pool) {
+        await pool.close();
+    }
+    process.exit(0);
 });
 
-// Reportes del usuario
-app.get('/api/reportes', (req, res) => {
-    res.json({
-        success: true,
-        reportes: [
-            {
-                id: 1,
-                titulo: 'Dashboard Principal',
-                descripcion: 'Dashboard principal de Power BI',
-                url: 'https://app.powerbi.com/reportEmbed?reportId=sample',
-                intervalo_refresh: 30,
-                fecha_creacion: new Date().toISOString()
-            }
-        ]
-    });
-});
-
-// Catch all para rutas no encontradas
-app.use('*', (req, res) => {
-    res.status(404).json({
-        error: 'Endpoint no encontrado',
-        message: 'La ruta solicitada no existe',
-        available_endpoints: [
-            'GET /health',
-            'POST /api/login',
-            'GET /api/verify',
-            'POST /api/logout',
-            'GET /api/admin/stats',
-            'GET /api/admin/usuarios',
-            'GET /api/admin/reportes',
-            'GET /api/reportes'
-        ]
-    });
-});
-
-// Error handler global
-app.use((error, req, res, next) => {
-    console.error('Error no manejado:', error);
-    res.status(500).json({
-        error: 'Error interno del servidor',
-        message: 'Ocurrió un error inesperado'
-    });
-});
-
-// Iniciar servidor
-app.listen(PORT, () => {
-    console.log(`🚀 Servidor PowerBI corriendo en puerto ${PORT}`);
-    console.log(`📊 Modo: Fallback (sin base de datos)`);
-    console.log(`🔗 Health check: http://localhost:${PORT}/health`);
-    console.log(`🔑 Credenciales admin: admin@powerbi.com / admin123`);
-    console.log(`👤 Credenciales user: usuario@powerbi.com / user123`);
+// Iniciar el servidor
+startServer().catch(error => {
+    console.error('Error al iniciar servidor:', error);
+    process.exit(1);
 });
 
 module.exports = app;
