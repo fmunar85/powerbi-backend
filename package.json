@@ -1,32 +1,28 @@
 {
-  "name": "powerbi-backend",
+  "name": "powerbi-dashboard-backend",
   "version": "1.0.0",
-  "description": "Backend API for Power BI Dashboard Authentication System",
-  "main": "server.js",
-  "scripts": {
-    "start": "node server.js",
-    "dev": "nodemon server.js"
-  },
-  "dependencies": {
-    "express": "^4.19.2",
-    "mssql": "^10.0.2",
-    "cors": "^2.8.5",
-    "jsonwebtoken": "^9.0.2",
-    "dotenv": "^16.4.5"
-  },
-  "devDependencies": {
-    "nodemon": "^3.1.0"
-  },
+  "description": "Backend para Power BI Dashboard con autenticación y gestión de permisos",
+  "main": "server-render-compatible.js",
   "engines": {
     "node": ">=18.0.0"
+  },
+  "scripts": {
+    "start": "node server-render-compatible.js",
+    "dev": "node server-render-compatible.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
   },
   "keywords": [
     "powerbi",
     "dashboard",
     "authentication",
-    "api",
-    "express"
+    "sql-server"
   ],
-  "author": "FMunar",
-  "license": "ISC"
+  "author": "PowerBI Team",
+  "license": "MIT"
 }
