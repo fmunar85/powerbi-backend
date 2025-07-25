@@ -1,0 +1,6 @@
+# Render.com deployment settings
+NODE_VERSION=18.19.0
+NPM_VERSION=10.2.3
+
+# Build configuration
+ENABLE_DYNAMIC_INSTALL=true
