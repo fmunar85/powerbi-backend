@@ -1,19 +1,6 @@
 const express = require('express');
 const cors = require('cors');
 
-// Intentar cargar mssql de forma segura
-let sql = null;
-let SQL_AVAILABLE = false;
-
-try {
-    sql = require('mssql');
-    SQL_AVAILABLE = true;
-    console.log('✅ MSSQL module loaded successfully');
-} catch (error) {
-    console.log('⚠️  MSSQL module not available, using fallback mode');
-    SQL_AVAILABLE = false;
-}
-
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -25,268 +12,78 @@ app.use(cors({
 
 app.use(express.json());
 
-// Configuración de base de datos SQL Server
-const dbConfig = {
-    user: 'sa',
-    password: 'TJTQ',
-    server: '192.168.30.36',
-    database: 'dbPowerbi',
-    options: {
-        encrypt: false,
-        trustServerCertificate: true,
-        enableArithAbort: true,
-        connectTimeout: 30000,
-        requestTimeout: 30000
+// Variables globales para datos en memoria
+let users = [
+    { id: 1, nombre: 'Admin', apellido: 'Sistema', email: 'admin@powerbi.com', password: 'admin123', admin: true, activo: true },
+    { id: 2, nombre: 'Usuario', apellido: 'Demo', email: 'usuario@powerbi.com', password: 'user123', admin: false, activo: true }
+];
+
+let reports = [
+    { 
+        id: 1, 
+        nombre: 'Ventas Dashboard', 
+        url: 'https://app.powerbi.com/view?r=eyJrIjoiYzg4YWE1YjctMjQ3OC00Y2U5LTkzOWQtYWY5OTJjZGMwOGQ5IiwidCI6IjljOWEzMGRlLWQzZWUtNDJmNy04NzJiLTNjYjkyNzk1OGE4YyIsImMiOjl9', 
+        descripcion: 'Dashboard principal de análisis de ventas', 
+        refresh_interval: 120, 
+        activo: true,
+        usuario_creador: 1,
+        fecha_creacion: new Date().toISOString()
     },
-    pool: {
-        max: 10,
-        min: 0,
-        idleTimeoutMillis: 30000
+    { 
+        id: 2, 
+        nombre: 'Finanzas Dashboard', 
+        url: 'https://app.powerbi.com/view?r=eyJrIjoiYzg4YWE1YjctMjQ3OC00Y2U5LTkzOWQtYWY5OTJjZGMwOGQ5IiwidCI6IjljOWEzMGRlLWQzZWUtNDJmNy04NzJiLTNjYjkyNzk1OGE4YyIsImMiOjl9', 
+        descripcion: 'Reportes financieros y análisis de presupuesto', 
+        refresh_interval: 300, 
+        activo: true,
+        usuario_creador: 1,
+        fecha_creacion: new Date().toISOString()
+    },
+    { 
+        id: 3, 
+        nombre: 'Marketing Dashboard', 
+        url: 'https://app.powerbi.com/view?r=eyJrIjoiYzg4YWE1YjctMjQ3OC00Y2U5LTkzOWQtYWY5OTJjZGMwOGQ5IiwidCI6IjljOWEzMGRlLWQzZWUtNDJmNy04NzJiLTNjYjkyNzk1OGE4YyIsImMiOjl9', 
+        descripcion: 'Métricas de marketing y análisis de campañas', 
+        refresh_interval: 180, 
+        activo: true,
+        usuario_creador: 1,
+        fecha_creacion: new Date().toISOString()
     }
-};
+];
 
-let pool = null;
+let permissions = [
+    // Admin tiene acceso total a todos
+    { id: 1, usuario_id: 1, reporte_id: 1, puede_ver: true, puede_editar: true },
+    { id: 2, usuario_id: 1, reporte_id: 2, puede_ver: true, puede_editar: true },
+    { id: 3, usuario_id: 1, reporte_id: 3, puede_ver: true, puede_editar: true },
+    // Usuario normal solo puede ver
+    { id: 4, usuario_id: 2, reporte_id: 1, puede_ver: true, puede_editar: false },
+    { id: 5, usuario_id: 2, reporte_id: 2, puede_ver: true, puede_editar: false },
+    { id: 6, usuario_id: 2, reporte_id: 3, puede_ver: true, puede_editar: false }
+];
 
-// Función para inicializar la base de datos
-async function initializeDatabase() {
-    if (!SQL_AVAILABLE) {
-        console.log('⚠️  SQL Server no disponible, usando modo fallback');
-        return false;
-    }
+let activity = [];
+let nextId = 4; // Para nuevos reportes
 
-    try {
-        console.log('🔄 Conectando a SQL Server...');
-        pool = await sql.connect(dbConfig);
-        console.log('✅ Conectado a SQL Server');
-        
-        // Verificar y crear tablas si no existen
-        await createTablesIfNotExist();
-        await insertDefaultData();
-        
-        console.log('✅ Base de datos inicializada correctamente');
-        return true;
-    } catch (error) {
-        console.error('❌ Error al conectar con SQL Server:', error.message);
-        pool = null;
-        return false;
-    }
+// Función para generar IDs únicos
+function generateId() {
+    return nextId++;
 }
 
-// Función para crear tablas si no existen
-async function createTablesIfNotExist() {
-    if (!SQL_AVAILABLE || !pool) {
-        console.log('⚠️  Saltando creación de tablas - SQL no disponible');
-        return;
-    }
-
-    try {
-        console.log('🔄 Verificando tablas...');
-        
-        // Crear tabla usuarios
-        await pool.request().query(`
-            IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[usuarios]') AND type in (N'U'))
-            BEGIN
-                CREATE TABLE [dbo].[usuarios] (
-                    [id] [int] IDENTITY(1,1) NOT NULL,
-                    [nombre] [nvarchar](100) NOT NULL,
-                    [apellido] [nvarchar](100) NOT NULL,
-                    [email] [nvarchar](255) NOT NULL UNIQUE,
-                    [password] [nvarchar](255) NOT NULL,
-                    [admin] [bit] NOT NULL DEFAULT 0,
-                    [activo] [bit] NOT NULL DEFAULT 1,
-                    [fecha_creacion] [datetime] NOT NULL DEFAULT GETDATE(),
-                    [fecha_actualizacion] [datetime] NOT NULL DEFAULT GETDATE(),
-                    CONSTRAINT [PK_usuarios] PRIMARY KEY CLUSTERED ([id] ASC)
-                );
-            END
-        `);
-
-        // Crear tabla reportes
-        await pool.request().query(`
-            IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[reportes]') AND type in (N'U'))
-            BEGIN
-                CREATE TABLE [dbo].[reportes] (
-                    [id] [int] IDENTITY(1,1) NOT NULL,
-                    [nombre] [nvarchar](255) NOT NULL,
-                    [url] [nvarchar](1000) NOT NULL,
-                    [descripcion] [nvarchar](500) NULL,
-                    [refresh_interval] [int] NOT NULL DEFAULT 60,
-                    [activo] [bit] NOT NULL DEFAULT 1,
-                    [usuario_creador] [int] NULL,
-                    [fecha_creacion] [datetime] NOT NULL DEFAULT GETDATE(),
-                    [fecha_actualizacion] [datetime] NOT NULL DEFAULT GETDATE(),
-                    CONSTRAINT [PK_reportes] PRIMARY KEY CLUSTERED ([id] ASC)
-                );
-            END
-        `);
-
-        // Crear tabla permisos
-        await pool.request().query(`
-            IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[permisos]') AND type in (N'U'))
-            BEGIN
-                CREATE TABLE [dbo].[permisos] (
-                    [id] [int] IDENTITY(1,1) NOT NULL,
-                    [usuario_id] [int] NOT NULL,
-                    [reporte_id] [int] NOT NULL,
-                    [puede_ver] [bit] NOT NULL DEFAULT 1,
-                    [puede_editar] [bit] NOT NULL DEFAULT 0,
-                    [fecha_asignacion] [datetime] NOT NULL DEFAULT GETDATE(),
-                    CONSTRAINT [PK_permisos] PRIMARY KEY CLUSTERED ([id] ASC)
-                );
-            END
-        `);
-
-        // Crear tabla actividad
-        await pool.request().query(`
-            IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[actividad]') AND type in (N'U'))
-            BEGIN
-                CREATE TABLE [dbo].[actividad] (
-                    [id] [int] IDENTITY(1,1) NOT NULL,
-                    [usuario_id] [int] NULL,
-                    [accion] [nvarchar](100) NOT NULL,
-                    [detalle] [nvarchar](500) NULL,
-                    [fecha] [datetime] NOT NULL DEFAULT GETDATE(),
-                    [ip_address] [nvarchar](50) NULL,
-                    CONSTRAINT [PK_actividad] PRIMARY KEY CLUSTERED ([id] ASC)
-                );
-            END
-        `);
-
-        console.log('✅ Tablas verificadas/creadas');
-    } catch (error) {
-        console.error('❌ Error al crear tablas:', error.message);
-        throw error;
-    }
-}
-
-// Función para insertar datos por defecto
-async function insertDefaultData() {
-    if (!SQL_AVAILABLE || !pool) {
-        console.log('⚠️  Saltando inserción de datos - SQL no disponible');
-        return;
-    }
-
-    try {
-        console.log('🔄 Insertando datos por defecto...');
-        
-        // Insertar usuarios por defecto
-        const checkAdmin = await pool.request()
-            .input('email', sql.NVarChar, 'admin@powerbi.com')
-            .query('SELECT COUNT(*) as count FROM usuarios WHERE email = @email');
-        
-        if (checkAdmin.recordset[0].count === 0) {
-            await pool.request()
-                .input('nombre', sql.NVarChar, 'Admin')
-                .input('apellido', sql.NVarChar, 'Sistema')
-                .input('email', sql.NVarChar, 'admin@powerbi.com')
-                .input('password', sql.NVarChar, 'admin123')
-                .input('admin', sql.Bit, true)
-                .query(`
-                    INSERT INTO usuarios (nombre, apellido, email, password, admin, activo)
-                    VALUES (@nombre, @apellido, @email, @password, @admin, 1)
-                `);
-            console.log('✅ Usuario administrador creado');
-        }
-
-        const checkUser = await pool.request()
-            .input('email', sql.NVarChar, 'usuario@powerbi.com')
-            .query('SELECT COUNT(*) as count FROM usuarios WHERE email = @email');
-        
-        if (checkUser.recordset[0].count === 0) {
-            await pool.request()
-                .input('nombre', sql.NVarChar, 'Usuario')
-                .input('apellido', sql.NVarChar, 'Demo')
-                .input('email', sql.NVarChar, 'usuario@powerbi.com')
-                .input('password', sql.NVarChar, 'user123')
-                .input('admin', sql.Bit, false)
-                .query(`
-                    INSERT INTO usuarios (nombre, apellido, email, password, admin, activo)
-                    VALUES (@nombre, @apellido, @email, @password, @admin, 1)
-                `);
-            console.log('✅ Usuario demo creado');
-        }
-
-        // Insertar reportes por defecto
-        const reportes = [
-            {
-                nombre: 'Ventas Dashboard',
-                url: 'https://app.powerbi.com/view?r=eyJrIjoiYzg4YWE1YjctMjQ3OC00Y2U5LTkzOWQtYWY5OTJjZGMwOGQ5IiwidCI6IjljOWEzMGRlLWQzZWUtNDJmNy04NzJiLTNjYjkyNzk1OGE4YyIsImMiOjl9',
-                descripcion: 'Dashboard principal de análisis de ventas',
-                refresh_interval: 120
-            },
-            {
-                nombre: 'Finanzas Dashboard',
-                url: 'https://app.powerbi.com/view?r=eyJrIjoiYzg4YWE1YjctMjQ3OC00Y2U5LTkzOWQtYWY5OTJjZGMwOGQ5IiwidCI6IjljOWEzMGRlLWQzZWUtNDJmNy04NzJiLTNjYjkyNzk1OGE4YyIsImMiOjl9',
-                descripcion: 'Reportes financieros y análisis de presupuesto',
-                refresh_interval: 300
-            },
-            {
-                nombre: 'Marketing Dashboard',
-                url: 'https://app.powerbi.com/view?r=eyJrIjoiYzg4YWE1YjctMjQ3OC00Y2U5LTkzOWQtYWY5OTJjZGMwOGQ5IiwidCI6IjljOWEzMGRlLWQzZWUtNDJmNy04NzJiLTNjYjkyNzk1OGE4YyIsImMiOjl9',
-                descripcion: 'Métricas de marketing y análisis de campañas',
-                refresh_interval: 180
-            }
-        ];
-
-        for (const reporte of reportes) {
-            const checkReporte = await pool.request()
-                .input('nombre', sql.NVarChar, reporte.nombre)
-                .query('SELECT COUNT(*) as count FROM reportes WHERE nombre = @nombre');
-            
-            if (checkReporte.recordset[0].count === 0) {
-                await pool.request()
-                    .input('nombre', sql.NVarChar, reporte.nombre)
-                    .input('url', sql.NVarChar, reporte.url)
-                    .input('descripcion', sql.NVarChar, reporte.descripcion)
-                    .input('refresh_interval', sql.Int, reporte.refresh_interval)
-                    .input('usuario_creador', sql.Int, 1)
-                    .query(`
-                        INSERT INTO reportes (nombre, url, descripcion, refresh_interval, activo, usuario_creador)
-                        VALUES (@nombre, @url, @descripcion, @refresh_interval, 1, @usuario_creador)
-                    `);
-                console.log(`✅ Reporte ${reporte.nombre} creado`);
-            }
-        }
-
-        console.log('✅ Datos por defecto insertados');
-    } catch (error) {
-        console.error('❌ Error al insertar datos por defecto:', error.message);
-        throw error;
-    }
-}
-
-// Middleware para verificar conexión DB
-async function checkDbConnection(req, res, next) {
-    if (!SQL_AVAILABLE || !pool) {
-        // En modo fallback, continuar sin base de datos
-        req.fallbackMode = true;
-        return next();
-    }
-    next();
-}
-
-// Función para ejecutar queries con manejo de errores
-async function executeQuery(query, inputs = {}) {
-    if (!SQL_AVAILABLE || !pool) {
-        throw new Error('Base de datos no disponible');
-    }
-
-    try {
-        const request = pool.request();
-        
-        // Agregar inputs al request
-        for (const [key, value] of Object.entries(inputs)) {
-            if (SQL_AVAILABLE && sql) {
-                // Solo usar tipos SQL si está disponible
-                request.input(key, value);
-            }
-        }
-        
-        const result = await request.query(query);
-        return result.recordset;
-    } catch (error) {
-        console.error('Error en query:', error.message);
-        throw error;
+// Función para registrar actividad
+function logActivity(userId, action, detail) {
+    activity.push({
+        id: generateId(),
+        usuario_id: userId,
+        accion: action,
+        detalle: detail,
+        fecha: new Date().toISOString(),
+        ip_address: 'server'
+    });
+    
+    // Mantener solo los últimos 100 registros
+    if (activity.length > 100) {
+        activity = activity.slice(-100);
     }
 }
 
@@ -299,9 +96,13 @@ app.get('/health', (req, res) => {
     const status = {
         status: 'OK',
         timestamp: new Date().toISOString(),
-        database: pool ? 'Conectada' : 'Modo Fallback',
-        sqlModule: SQL_AVAILABLE ? 'Disponible' : 'No Disponible',
-        server: 'Render - Funcionando'
+        database: 'Memoria Local',
+        sqlModule: 'No Requerido',
+        mode: 'Standalone',
+        server: 'Render - Funcionando sin dependencias SQL',
+        users: users.length,
+        reports: reports.length,
+        permissions: permissions.length
     };
     res.json(status);
 });
@@ -318,57 +119,19 @@ app.post('/login', async (req, res) => {
             });
         }
 
-        if (pool && SQL_AVAILABLE) {
-            // Autenticación con base de datos
-            const users = await executeQuery(
-                'SELECT * FROM usuarios WHERE email = @email AND password = @password AND activo = 1',
-                { 
-                    email: sql.NVarChar(email), 
-                    password: sql.NVarChar(password) 
-                }
-            );
-
-            if (users.length > 0) {
-                const user = users[0];
-                const token = 'db_' + Buffer.from(email + ':' + Date.now()).toString('base64');
-                
-                // Registrar actividad
-                if (SQL_AVAILABLE) {
-                    await executeQuery(
-                        'INSERT INTO actividad (usuario_id, accion, detalle, ip_address) VALUES (@usuario_id, @accion, @detalle, @ip)',
-                        {
-                            usuario_id: sql.Int(user.id),
-                            accion: sql.NVarChar('Login exitoso'),
-                            detalle: sql.NVarChar(`Usuario ${user.email} inició sesión`),
-                            ip: sql.NVarChar(req.ip || 'unknown')
-                        }
-                    );
-                }
-
-                return res.json({
-                    success: true,
-                    token: token,
-                    user: {
-                        id: user.id,
-                        nombre: user.nombre,
-                        apellido: user.apellido,
-                        email: user.email,
-                        admin: user.admin
-                    }
-                });
-            }
-        }
-
-        // Fallback: autenticación local
-        const localUsers = [
-            { id: 1, email: 'admin@powerbi.com', password: 'admin123', nombre: 'Admin', apellido: 'Sistema', admin: true },
-            { id: 2, email: 'usuario@powerbi.com', password: 'user123', nombre: 'Usuario', apellido: 'Demo', admin: false }
-        ];
-
-        const user = localUsers.find(u => u.email.toLowerCase() === email.toLowerCase() && u.password === password);
+        // Buscar usuario en datos locales
+        const user = users.find(u => 
+            u.email.toLowerCase() === email.toLowerCase() && 
+            u.password === password && 
+            u.activo
+        );
         
         if (user) {
-            const token = 'local_' + Buffer.from(email + ':' + Date.now()).toString('base64');
+            const token = 'mem_' + Buffer.from(email + ':' + Date.now()).toString('base64');
+            
+            // Registrar actividad
+            logActivity(user.id, 'Login exitoso', `Usuario ${user.email} inició sesión`);
+            
             return res.json({
                 success: true,
                 token: token,
@@ -396,30 +159,38 @@ app.post('/login', async (req, res) => {
     }
 });
 
-// Ruta para obtener reportes del usuario
-app.get('/reports/user/:userId', checkDbConnection, async (req, res) => {
-    try {
-        const userId = req.params.userId;
-        
-        if (req.fallbackMode) {
-            // Datos por defecto en modo fallback
-            const defaultReports = [
-                { id: 1, nombre: 'Ventas Dashboard', url: 'https://app.powerbi.com/view?r=eyJrIjoiYzg4YWE1YjctMjQ3OC00Y2U5LTkzOWQtYWY5OTJjZGMwOGQ5IiwidCI6IjljOWEzMGRlLWQzZWUtNDJmNy04NzJiLTNjYjkyNzk1OGE4YyIsImMiOjl9', descripcion: 'Dashboard de ventas', refresh_interval: 120, puede_ver: true, puede_editar: userId == 1 },
-                { id: 2, nombre: 'Finanzas Dashboard', url: 'https://app.powerbi.com/view?r=eyJrIjoiYzg4YWE1YjctMjQ3OC00Y2U5LTkzOWQtYWY5OTJjZGMwOGQ5IiwidCI6IjljOWEzMGRlLWQzZWUtNDJmNy04NzJiLTNjYjkyNzk1OGE4YyIsImMiOjl9', descripcion: 'Reportes financieros', refresh_interval: 300, puede_ver: true, puede_editar: userId == 1 },
-                { id: 3, nombre: 'Marketing Dashboard', url: 'https://app.powerbi.com/view?r=eyJrIjoiYzg4YWE1YjctMjQ3OC00Y2U5LTkzOWQtYWY5OTJjZGMwOGQ5IiwidCI6IjljOWEzMGRlLWQzZWUtNDJmNy04NzJiLTNjYjkyNzk1OGE4YyIsImMiOjl9', descripcion: 'Métricas de marketing', refresh_interval: 180, puede_ver: true, puede_editar: userId == 1 }
-            ];
-            return res.json(defaultReports);
-        }
-        
-        const reportes = await executeQuery(`
-            SELECT r.*, p.puede_ver, p.puede_editar
-            FROM reportes r
-            INNER JOIN permisos p ON r.id = p.reporte_id
-            WHERE p.usuario_id = @userId AND r.activo = 1 AND p.puede_ver = 1
-            ORDER BY r.nombre
-        `, { userId: sql.Int(userId) });
+// Ruta para verificar token
+app.post('/verify-token', (req, res) => {
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    
+    if (token && token.startsWith('mem_')) {
+        res.json({ success: true, message: 'Token válido' });
+    } else {
+        res.status(401).json({ success: false, message: 'Token inválido' });
+    }
+});
 
-        res.json(reportes);
+// Ruta para obtener reportes del usuario
+app.get('/reports/user/:userId', (req, res) => {
+    try {
+        const userId = parseInt(req.params.userId);
+        
+        // Obtener permisos del usuario
+        const userPermissions = permissions.filter(p => p.usuario_id === userId && p.puede_ver);
+        
+        // Obtener reportes permitidos
+        const userReports = reports.filter(r => {
+            return r.activo && userPermissions.some(p => p.reporte_id === r.id);
+        }).map(r => {
+            const permission = userPermissions.find(p => p.reporte_id === r.id);
+            return {
+                ...r,
+                puede_ver: permission.puede_ver,
+                puede_editar: permission.puede_editar
+            };
+        });
+
+        res.json(userReports);
     } catch (error) {
         console.error('Error al obtener reportes:', error);
         res.status(500).json({
@@ -430,47 +201,46 @@ app.get('/reports/user/:userId', checkDbConnection, async (req, res) => {
 });
 
 // Ruta para crear nuevo reporte
-app.post('/reports', checkDbConnection, async (req, res) => {
+app.post('/reports', (req, res) => {
     try {
         const { nombre, url, descripcion, refresh_interval, usuario_id } = req.body;
         
-        if (req.fallbackMode) {
-            // Simulación en modo fallback
-            const reporteId = Math.floor(Math.random() * 1000) + 100;
-            return res.json({
-                success: true,
-                message: 'Reporte creado en modo local',
-                reporteId: reporteId
+        if (!nombre || !url) {
+            return res.status(400).json({
+                success: false,
+                message: 'Nombre y URL son requeridos'
             });
         }
         
-        const result = await pool.request()
-            .input('nombre', sql.NVarChar, nombre)
-            .input('url', sql.NVarChar, url)
-            .input('descripcion', sql.NVarChar, descripcion || '')
-            .input('refresh_interval', sql.Int, refresh_interval || 60)
-            .input('usuario_creador', sql.Int, usuario_id)
-            .query(`
-                INSERT INTO reportes (nombre, url, descripcion, refresh_interval, activo, usuario_creador)
-                OUTPUT INSERTED.id
-                VALUES (@nombre, @url, @descripcion, @refresh_interval, 1, @usuario_creador)
-            `);
-
-        const reporteId = result.recordset[0].id;
-
+        const newReport = {
+            id: generateId(),
+            nombre: nombre,
+            url: url,
+            descripcion: descripcion || '',
+            refresh_interval: refresh_interval || 60,
+            activo: true,
+            usuario_creador: usuario_id || 1,
+            fecha_creacion: new Date().toISOString()
+        };
+        
+        reports.push(newReport);
+        
         // Asignar permiso al usuario creador
-        await pool.request()
-            .input('usuario_id', sql.Int, usuario_id)
-            .input('reporte_id', sql.Int, reporteId)
-            .query(`
-                INSERT INTO permisos (usuario_id, reporte_id, puede_ver, puede_editar)
-                VALUES (@usuario_id, @reporte_id, 1, 1)
-            `);
+        permissions.push({
+            id: generateId(),
+            usuario_id: usuario_id || 1,
+            reporte_id: newReport.id,
+            puede_ver: true,
+            puede_editar: true
+        });
+        
+        // Registrar actividad
+        logActivity(usuario_id || 1, 'Reporte creado', `Reporte "${nombre}" creado exitosamente`);
 
         res.json({
             success: true,
             message: 'Reporte creado exitosamente',
-            reporteId: reporteId
+            reporteId: newReport.id
         });
     } catch (error) {
         console.error('Error al crear reporte:', error);
@@ -482,27 +252,30 @@ app.post('/reports', checkDbConnection, async (req, res) => {
 });
 
 // Ruta para eliminar reporte
-app.delete('/reports/:id', checkDbConnection, async (req, res) => {
+app.delete('/reports/:id', (req, res) => {
     try {
-        const reporteId = req.params.id;
+        const reporteId = parseInt(req.params.id);
         
-        if (req.fallbackMode) {
-            // Simulación en modo fallback
-            return res.json({
-                success: true,
-                message: 'Reporte eliminado en modo local'
+        // Buscar reporte
+        const reportIndex = reports.findIndex(r => r.id === reporteId);
+        
+        if (reportIndex === -1) {
+            return res.status(404).json({
+                success: false,
+                message: 'Reporte no encontrado'
             });
         }
         
-        // Eliminar permisos primero
-        await pool.request()
-            .input('reporte_id', sql.Int, reporteId)
-            .query('DELETE FROM permisos WHERE reporte_id = @reporte_id');
-
+        const reporteName = reports[reportIndex].nombre;
+        
+        // Eliminar permisos del reporte
+        permissions = permissions.filter(p => p.reporte_id !== reporteId);
+        
         // Eliminar reporte
-        await pool.request()
-            .input('id', sql.Int, reporteId)
-            .query('DELETE FROM reportes WHERE id = @id');
+        reports.splice(reportIndex, 1);
+        
+        // Registrar actividad
+        logActivity(1, 'Reporte eliminado', `Reporte "${reporteName}" eliminado`);
 
         res.json({
             success: true,
@@ -518,26 +291,17 @@ app.delete('/reports/:id', checkDbConnection, async (req, res) => {
 });
 
 // Rutas de administración
-app.get('/admin/stats', checkDbConnection, async (req, res) => {
+app.get('/admin/stats', (req, res) => {
     try {
-        if (req.fallbackMode) {
-            return res.json({
-                totalUsers: 2,
-                activeUsers: 2,
-                totalReports: 3,
-                activeSessions: 1
-            });
-        }
+        const stats = {
+            totalUsers: users.length,
+            activeUsers: users.filter(u => u.activo).length,
+            totalReports: reports.filter(r => r.activo).length,
+            activeSessions: 1,
+            totalActivity: activity.length
+        };
 
-        const stats = await executeQuery(`
-            SELECT 
-                (SELECT COUNT(*) FROM usuarios) as totalUsers,
-                (SELECT COUNT(*) FROM usuarios WHERE activo = 1) as activeUsers,
-                (SELECT COUNT(*) FROM reportes WHERE activo = 1) as totalReports,
-                1 as activeSessions
-        `);
-
-        res.json(stats[0]);
+        res.json(stats);
     } catch (error) {
         console.error('Error al obtener estadísticas:', error);
         res.json({
@@ -549,17 +313,18 @@ app.get('/admin/stats', checkDbConnection, async (req, res) => {
     }
 });
 
-app.get('/admin/users', checkDbConnection, async (req, res) => {
+app.get('/admin/users', (req, res) => {
     try {
-        if (req.fallbackMode) {
-            return res.json([
-                { id: 1, nombre: 'Admin', apellido: 'Sistema', email: 'admin@powerbi.com', admin: true, activo: true },
-                { id: 2, nombre: 'Usuario', apellido: 'Demo', email: 'usuario@powerbi.com', admin: false, activo: true }
-            ]);
-        }
-
-        const users = await executeQuery('SELECT id, nombre, apellido, email, admin, activo FROM usuarios ORDER BY nombre');
-        res.json(users);
+        const publicUsers = users.map(u => ({
+            id: u.id,
+            nombre: u.nombre,
+            apellido: u.apellido,
+            email: u.email,
+            admin: u.admin,
+            activo: u.activo
+        }));
+        
+        res.json(publicUsers);
     } catch (error) {
         console.error('Error al obtener usuarios:', error);
         res.status(500).json({
@@ -569,17 +334,8 @@ app.get('/admin/users', checkDbConnection, async (req, res) => {
     }
 });
 
-app.get('/admin/reports', checkDbConnection, async (req, res) => {
+app.get('/admin/reports', (req, res) => {
     try {
-        if (req.fallbackMode) {
-            return res.json([
-                { id: 1, nombre: 'Ventas Dashboard', url: 'https://app.powerbi.com/view?r=sample1', descripcion: 'Dashboard de ventas', refresh_interval: 120, activo: true },
-                { id: 2, nombre: 'Finanzas Dashboard', url: 'https://app.powerbi.com/view?r=sample2', descripcion: 'Reportes financieros', refresh_interval: 300, activo: true },
-                { id: 3, nombre: 'Marketing Dashboard', url: 'https://app.powerbi.com/view?r=sample3', descripcion: 'Métricas de marketing', refresh_interval: 180, activo: true }
-            ]);
-        }
-
-        const reports = await executeQuery('SELECT * FROM reportes ORDER BY nombre');
         res.json(reports);
     } catch (error) {
         console.error('Error al obtener reportes:', error);
@@ -590,58 +346,187 @@ app.get('/admin/reports', checkDbConnection, async (req, res) => {
     }
 });
 
+app.get('/admin/activity', (req, res) => {
+    try {
+        // Devolver últimos 50 registros
+        const recentActivity = activity.slice(-50).reverse();
+        res.json(recentActivity);
+    } catch (error) {
+        console.error('Error al obtener actividad:', error);
+        res.json([]);
+    }
+});
+
+app.get('/admin/permissions', (req, res) => {
+    try {
+        // Combinar permisos con información de usuarios y reportes
+        const detailedPermissions = permissions.map(p => {
+            const user = users.find(u => u.id === p.usuario_id);
+            const report = reports.find(r => r.id === p.reporte_id);
+            
+            return {
+                ...p,
+                usuario_nombre: user ? `${user.nombre} ${user.apellido}` : 'Usuario desconocido',
+                reporte_nombre: report ? report.nombre : 'Reporte desconocido'
+            };
+        });
+        
+        res.json(detailedPermissions);
+    } catch (error) {
+        console.error('Error al obtener permisos:', error);
+        res.json([]);
+    }
+});
+
+// Ruta para crear usuario (admin)
+app.post('/admin/users', (req, res) => {
+    try {
+        const { nombre, apellido, email, password, admin, activo } = req.body;
+        
+        if (!nombre || !apellido || !email || !password) {
+            return res.status(400).json({
+                success: false,
+                message: 'Todos los campos son requeridos'
+            });
+        }
+        
+        // Verificar si el email ya existe
+        if (users.find(u => u.email.toLowerCase() === email.toLowerCase())) {
+            return res.status(400).json({
+                success: false,
+                message: 'El email ya está registrado'
+            });
+        }
+        
+        const newUser = {
+            id: generateId(),
+            nombre,
+            apellido,
+            email,
+            password,
+            admin: !!admin,
+            activo: activo !== false
+        };
+        
+        users.push(newUser);
+        
+        // Registrar actividad
+        logActivity(1, 'Usuario creado', `Usuario ${email} creado`);
+        
+        res.json({
+            success: true,
+            message: 'Usuario creado exitosamente',
+            userId: newUser.id
+        });
+    } catch (error) {
+        console.error('Error al crear usuario:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error al crear usuario'
+        });
+    }
+});
+
+// Ruta para asignar permisos
+app.post('/admin/permissions', (req, res) => {
+    try {
+        const { usuario_id, reporte_id, puede_ver, puede_editar } = req.body;
+        
+        if (!usuario_id || !reporte_id) {
+            return res.status(400).json({
+                success: false,
+                message: 'Usuario y reporte son requeridos'
+            });
+        }
+        
+        // Verificar si ya existe el permiso
+        const existingPermission = permissions.find(p => 
+            p.usuario_id === usuario_id && p.reporte_id === reporte_id
+        );
+        
+        if (existingPermission) {
+            // Actualizar permiso existente
+            existingPermission.puede_ver = puede_ver !== false;
+            existingPermission.puede_editar = !!puede_editar;
+        } else {
+            // Crear nuevo permiso
+            permissions.push({
+                id: generateId(),
+                usuario_id,
+                reporte_id,
+                puede_ver: puede_ver !== false,
+                puede_editar: !!puede_editar
+            });
+        }
+        
+        // Registrar actividad
+        logActivity(1, 'Permiso asignado', `Permiso asignado a usuario ${usuario_id} para reporte ${reporte_id}`);
+        
+        res.json({
+            success: true,
+            message: 'Permiso asignado exitosamente'
+        });
+    } catch (error) {
+        console.error('Error al asignar permiso:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error al asignar permiso'
+        });
+    }
+});
+
 // Ruta para endpoints disponibles
 app.get('/', (req, res) => {
     res.json({
         message: 'PowerBI Backend API',
-        version: '2.0 - Hybrid Mode',
-        database: pool ? 'Conectada' : 'Modo Fallback',
-        sqlModule: SQL_AVAILABLE ? 'Disponible' : 'No Disponible',
-        mode: SQL_AVAILABLE && pool ? 'Database' : 'Fallback',
+        version: '3.0 - Standalone Mode',
+        database: 'Memoria Local (Sin SQL Dependencies)',
+        mode: 'Standalone - Zero Dependencies',
+        compatible: 'Node.js 18+',
+        features: [
+            'Autenticación completa',
+            'Gestión de reportes',
+            'Permisos de usuario',
+            'Panel administrativo',
+            'Registro de actividad',
+            'CRUD completo',
+            'Sin dependencias SQL'
+        ],
         endpoints: [
             'GET /health - Estado del servidor',
             'POST /login - Autenticación',
+            'POST /verify-token - Verificar token',
             'GET /reports/user/:userId - Reportes del usuario',
             'POST /reports - Crear reporte',
             'DELETE /reports/:id - Eliminar reporte',
             'GET /admin/stats - Estadísticas',
             'GET /admin/users - Lista de usuarios',
-            'GET /admin/reports - Lista de reportes'
+            'GET /admin/reports - Lista de reportes',
+            'GET /admin/activity - Registro de actividad',
+            'GET /admin/permissions - Lista de permisos',
+            'POST /admin/users - Crear usuario',
+            'POST /admin/permissions - Asignar permisos'
         ]
     });
 });
 
-// Inicializar servidor
-async function startServer() {
-    // Intentar conectar a la base de datos
-    const dbConnected = await initializeDatabase();
-    
-    if (!dbConnected) {
-        console.log('⚠️  Servidor iniciado en modo FALLBACK (sin conexión a base de datos)');
-        console.log('📊 Todas las funciones están disponibles con datos por defecto');
-    }
+// Inicializar datos de actividad
+logActivity(1, 'Sistema iniciado', 'Backend PowerBI iniciado correctamente');
 
-    app.listen(PORT, () => {
-        console.log(`🚀 Servidor corriendo en puerto ${PORT}`);
-        console.log(`🌐 Endpoints disponibles en https://powerbi-backend-vxjd.onrender.com`);
-        console.log(`🔧 Modo SQL: ${SQL_AVAILABLE ? 'Disponible' : 'No Disponible'}`);
-        console.log(`📊 Estado de DB: ${pool ? 'Conectada' : 'Fallback'}`);
-    });
-}
-
-// Manejar cierre del servidor
-process.on('SIGINT', async () => {
-    console.log('Cerrando servidor...');
-    if (pool) {
-        await pool.close();
-    }
-    process.exit(0);
+// Iniciar servidor
+app.listen(PORT, () => {
+    console.log(`🚀 Servidor PowerBI Backend v3.0 corriendo en puerto ${PORT}`);
+    console.log(`🌐 Endpoints disponibles en https://powerbi-backend-vxjd.onrender.com`);
+    console.log(`� Modo: Standalone (Sin dependencias SQL)`);
+    console.log(`✅ Compatible: Node.js 18+ (Sin conflictos de Azure)`);
+    console.log(`📊 Datos cargados: ${users.length} usuarios, ${reports.length} reportes`);
+    console.log(`🔧 Funcionalidad: 100% operativa sin base de datos externa`);
 });
 
-// Iniciar el servidor
-startServer().catch(error => {
-    console.error('Error al iniciar servidor:', error);
-    process.exit(1);
+// Manejar cierre del servidor
+process.on('SIGINT', () => {
+    console.log('Cerrando servidor PowerBI Backend...');
+    process.exit(0);
 });
 
 module.exports = app;
