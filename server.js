@@ -1,3 +1,9 @@
+// ============================================
+// SERVIDOR HÍBRIDO POWERBI - RENDER DEPLOY
+// ============================================
+// Este archivo debe reemplazar server.js en Render
+// Conecta a SQL Server y persiste TODOS los cambios
+
 const express = require('express');
 const cors = require('cors');
 
@@ -448,7 +454,7 @@ app.post('/reports', async (req, res) => {
     }
 });
 
-// Ruta para eliminar reporte
+// Ruta para eliminar reporte - CORREGIDA PARA BD
 app.delete('/reports/:id', async (req, res) => {
     try {
         const reporteId = parseInt(req.params.id);
@@ -467,7 +473,7 @@ app.delete('/reports/:id', async (req, res) => {
                 // Eliminar permisos primero
                 await executeQuery('DELETE FROM permisos WHERE reporte_id = @reporte_id', { reporte_id: reporteId });
 
-                // Eliminar reporte (marcar como inactivo)
+                // MARCAR COMO INACTIVO EN BD (AQUÍ ESTABA EL PROBLEMA)
                 await executeQuery('UPDATE reportes SET activo = 0 WHERE id = @id', { id: reporteId });
 
                 // Recargar datos desde BD
