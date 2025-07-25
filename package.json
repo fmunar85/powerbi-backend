@@ -1,36 +1,25 @@
 {
   "name": "powerbi-backend",
-  "version": "3.0.0",
-  "description": "PowerBI Backend API - Standalone Version (No SQL Dependencies)",
+  "version": "3.1.0",
+  "description": "PowerBI Backend API - Hybrid Database/Memory Mode",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
-    "test": "echo \"Server v3.0 - No tests needed\" && exit 0"
-  },
-  "dependencies": {
-    "express": "^4.18.2",
-    "cors": "^2.8.5"
+    "test": "echo \"Error: no test specified\" && exit 1"
   },
   "engines": {
     "node": ">=18.0.0"
   },
-  "keywords": [
-    "powerbi",
-    "dashboard",
-    "api",
-    "backend",
-    "standalone",
-    "nodejs"
-  ],
-  "author": "PowerBI System",
-  "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/powerbi/backend.git"
+  "keywords": ["powerbi", "backend", "express", "api", "dashboard"],
+  "author": "PowerBI Team",
+  "license": "ISC",
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "mssql": "^8.1.4"
   },
-  "bugs": {
-    "url": "https://github.com/powerbi/backend/issues"
-  },
-  "homepage": "https://github.com/powerbi/backend#readme"
+  "optionalDependencies": {
+    "mssql": "^8.1.4"
+  }
 }
