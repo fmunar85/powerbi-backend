@@ -1,21 +1,20 @@
 const express = require('express');
 const sql = require('mssql');
 const cors = require('cors');
-const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
-const path = require('path');
+require('dotenv').config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Configuración de la base de datos
+// Configuración de la base de datos usando variables de entorno
 const dbConfig = {
-    server: '192.168.30.36',
-    database: 'dbPowerbi',
-    user: 'sa', // Cambiar por usuario apropiado
-    password: 'tu_password', // Cambiar por password real
+    server: process.env.DB_SERVER || '192.168.30.36',
+    database: process.env.DB_NAME || 'dbPowerbi',
+    user: process.env.DB_USER || 'sa',
+    password: process.env.DB_PASSWORD || 'TJTQ',
     options: {
-        encrypt: false, // Para SQL Server local
+        encrypt: false,
         trustServerCertificate: true
     },
     pool: {
@@ -26,9 +25,11 @@ const dbConfig = {
 };
 
 // Middleware
-app.use(cors());
+app.use(cors({
+    origin: ['https://powerbi-dashboards-1234.netlify.app', 'http://localhost:3000'],
+    credentials: true
+}));
 app.use(express.json());
-app.use(express.static(path.join(__dirname, '../')));
 
 // Conectar a la base de datos
 let pool;
@@ -75,6 +76,26 @@ function requireAdmin(req, res, next) {
     next();
 }
 
+// ==================== RUTAS DE SALUD ====================
+
+// Health check
+app.get('/health', (req, res) => {
+    res.json({ 
+        status: 'ok', 
+        timestamp: new Date().toISOString(),
+        uptime: process.uptime()
+    });
+});
+
+// API status
+app.get('/api/status', (req, res) => {
+    res.json({ 
+        status: 'API funcionando', 
+        version: '1.0.0',
+        database: pool ? 'conectada' : 'desconectada'
+    });
+});
+
 // ==================== RUTAS DE AUTENTICACIÓN ====================
 
 // Login
@@ -99,7 +120,7 @@ app.post('/api/login', async (req, res) => {
         const user = result.recordset[0];
         
         // Generar token único
-        const token = jwt.sign({ userId: user.id }, 'secret_key_powerbi_2025', { expiresIn: '8h' });
+        const token = jwt.sign({ userId: user.id }, process.env.JWT_SECRET || 'secret_key_powerbi_2025', { expiresIn: '8h' });
         
         // Crear sesión en base de datos
         const sessionRequest = pool.request();
@@ -386,28 +407,21 @@ app.post('/api/admin/reportes', authenticateToken, requireAdmin, async (req, res
     }
 });
 
-// ==================== SERVIDOR ====================
-
-// Servir páginas estáticas
-app.get('/login', (req, res) => {
-    res.sendFile(path.join(__dirname, '../login.html'));
-});
-
-app.get('/admin', authenticateToken, requireAdmin, (req, res) => {
-    res.sendFile(path.join(__dirname, '../admin/admin.html'));
-});
-
-app.get('/', (req, res) => {
-    res.sendFile(path.join(__dirname, '../dashboard.html'));
+// Manejar rutas no encontradas
+app.use('*', (req, res) => {
+    res.status(404).json({ 
+        error: 'Ruta no encontrada',
+        message: 'Esta es una API. El frontend está en https://powerbi-dashboards-1234.netlify.app'
+    });
 });
 
 // Iniciar servidor
 connectDB().then(() => {
     app.listen(PORT, () => {
-        console.log(`🚀 Servidor corriendo en http://localhost:${PORT}`);
-        console.log(`📊 Dashboard: http://localhost:${PORT}/`);
-        console.log(`🔐 Login: http://localhost:${PORT}/login`);
-        console.log(`⚙️ Admin: http://localhost:${PORT}/admin`);
+        console.log(`🚀 API Server corriendo en puerto ${PORT}`);
+        console.log(`🌐 Frontend disponible en: https://powerbi-dashboards-1234.netlify.app`);
+        console.log(`📊 Health check: /health`);
+        console.log(`🔌 API Status: /api/status`);
     });
 });
 
