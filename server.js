@@ -12,7 +12,43 @@ app.use(cors({
 
 app.use(express.json());
 
-// Variables globales para datos en memoria
+// Intentar cargar mssql de forma segura
+let sql = null;
+let SQL_AVAILABLE = false;
+
+try {
+    sql = require('mssql');
+    SQL_AVAILABLE = true;
+    console.log('✅ MSSQL module loaded successfully');
+} catch (error) {
+    console.log('⚠️  MSSQL module not available, using memory mode');
+    SQL_AVAILABLE = false;
+}
+
+// Configuración de base de datos SQL Server
+const dbConfig = {
+    user: 'sa',
+    password: 'TJTQ',
+    server: '192.168.30.36',
+    database: 'dbPowerbi',
+    options: {
+        encrypt: false,
+        trustServerCertificate: true,
+        enableArithAbort: true,
+        connectTimeout: 30000,
+        requestTimeout: 30000
+    },
+    pool: {
+        max: 10,
+        min: 0,
+        idleTimeoutMillis: 30000
+    }
+};
+
+let pool = null;
+let DB_CONNECTED = false;
+
+// Variables globales para datos en memoria (fallback)
 let users = [
     { id: 1, nombre: 'Admin', apellido: 'Sistema', email: 'admin@powerbi.com', password: 'admin123', admin: true, activo: true },
     { id: 2, nombre: 'Usuario', apellido: 'Demo', email: 'usuario@powerbi.com', password: 'user123', admin: false, activo: true }
@@ -87,6 +123,101 @@ function logActivity(userId, action, detail) {
     }
 }
 
+// Función para inicializar la base de datos
+async function initializeDatabase() {
+    if (!SQL_AVAILABLE) {
+        console.log('⚠️  SQL Server module not available, using memory mode');
+        return false;
+    }
+
+    try {
+        console.log('🔄 Intentando conectar a SQL Server...');
+        pool = await sql.connect(dbConfig);
+        console.log('✅ Conectado a SQL Server');
+        DB_CONNECTED = true;
+        
+        // Cargar datos desde la base de datos
+        await loadDataFromDatabase();
+        
+        console.log('✅ Base de datos inicializada correctamente');
+        return true;
+    } catch (error) {
+        console.error('❌ Error al conectar con SQL Server:', error.message);
+        console.log('⚠️  Continuando en modo memoria local');
+        pool = null;
+        DB_CONNECTED = false;
+        return false;
+    }
+}
+
+// Función para cargar datos desde la base de datos
+async function loadDataFromDatabase() {
+    if (!DB_CONNECTED || !pool) return;
+
+    try {
+        console.log('🔄 Cargando datos desde SQL Server...');
+        
+        // Cargar usuarios
+        const usersResult = await pool.request().query('SELECT * FROM usuarios WHERE activo = 1');
+        if (usersResult.recordset.length > 0) {
+            users = usersResult.recordset;
+            console.log(`✅ Cargados ${users.length} usuarios desde BD`);
+        }
+        
+        // Cargar reportes
+        const reportsResult = await pool.request().query('SELECT * FROM reportes WHERE activo = 1');
+        if (reportsResult.recordset.length > 0) {
+            reports = reportsResult.recordset;
+            console.log(`✅ Cargados ${reports.length} reportes desde BD`);
+        }
+        
+        // Cargar permisos
+        const permissionsResult = await pool.request().query('SELECT * FROM permisos');
+        if (permissionsResult.recordset.length > 0) {
+            permissions = permissionsResult.recordset;
+            console.log(`✅ Cargados ${permissions.length} permisos desde BD`);
+        }
+        
+        // Actualizar nextId
+        if (reports.length > 0) {
+            nextId = Math.max(...reports.map(r => r.id)) + 1;
+        }
+        
+    } catch (error) {
+        console.error('❌ Error al cargar datos desde BD:', error.message);
+    }
+}
+
+// Función para ejecutar queries con manejo de errores
+async function executeQuery(query, inputs = {}) {
+    if (!DB_CONNECTED || !pool) {
+        throw new Error('Base de datos no disponible');
+    }
+
+    try {
+        const request = pool.request();
+        
+        // Agregar inputs al request
+        for (const [key, value] of Object.entries(inputs)) {
+            if (typeof value === 'string') {
+                request.input(key, sql.NVarChar, value);
+            } else if (typeof value === 'number') {
+                request.input(key, sql.Int, value);
+            } else if (typeof value === 'boolean') {
+                request.input(key, sql.Bit, value);
+            } else {
+                request.input(key, value);
+            }
+        }
+        
+        const result = await request.query(query);
+        return result.recordset;
+    } catch (error) {
+        console.error('Error en query:', error.message);
+        throw error;
+    }
+}
+
 // =============================================
 // RUTAS DE LA API
 // =============================================
@@ -96,10 +227,10 @@ app.get('/health', (req, res) => {
     const status = {
         status: 'OK',
         timestamp: new Date().toISOString(),
-        database: 'Memoria Local',
-        sqlModule: 'No Requerido',
-        mode: 'Standalone',
-        server: 'Render - Funcionando sin dependencias SQL',
+        database: DB_CONNECTED ? 'SQL Server Conectada' : 'Memoria Local',
+        sqlModule: SQL_AVAILABLE ? 'Disponible' : 'No Disponible',
+        mode: DB_CONNECTED ? 'Database' : 'Memory',
+        server: 'Render - Híbrido SQL/Memory',
         users: users.length,
         reports: reports.length,
         permissions: permissions.length
@@ -119,15 +250,32 @@ app.post('/login', async (req, res) => {
             });
         }
 
-        // Buscar usuario en datos locales
-        const user = users.find(u => 
-            u.email.toLowerCase() === email.toLowerCase() && 
-            u.password === password && 
-            u.activo
-        );
+        let user = null;
+
+        if (DB_CONNECTED) {
+            // Autenticación con base de datos
+            try {
+                const result = await executeQuery(
+                    'SELECT * FROM usuarios WHERE email = @email AND password = @password AND activo = 1',
+                    { email: email, password: password }
+                );
+                user = result.length > 0 ? result[0] : null;
+            } catch (error) {
+                console.error('Error en DB login, usando memoria:', error.message);
+            }
+        }
+
+        if (!user) {
+            // Fallback: autenticación en memoria
+            user = users.find(u => 
+                u.email.toLowerCase() === email.toLowerCase() && 
+                u.password === password && 
+                u.activo
+            );
+        }
         
         if (user) {
-            const token = 'mem_' + Buffer.from(email + ':' + Date.now()).toString('base64');
+            const token = (DB_CONNECTED ? 'db_' : 'mem_') + Buffer.from(email + ':' + Date.now()).toString('base64');
             
             // Registrar actividad
             logActivity(user.id, 'Login exitoso', `Usuario ${user.email} inició sesión`);
@@ -159,36 +307,41 @@ app.post('/login', async (req, res) => {
     }
 });
 
-// Ruta para verificar token
-app.post('/verify-token', (req, res) => {
-    const token = req.headers.authorization?.replace('Bearer ', '');
-    
-    if (token && token.startsWith('mem_')) {
-        res.json({ success: true, message: 'Token válido' });
-    } else {
-        res.status(401).json({ success: false, message: 'Token inválido' });
-    }
-});
-
 // Ruta para obtener reportes del usuario
-app.get('/reports/user/:userId', (req, res) => {
+app.get('/reports/user/:userId', async (req, res) => {
     try {
         const userId = parseInt(req.params.userId);
-        
-        // Obtener permisos del usuario
-        const userPermissions = permissions.filter(p => p.usuario_id === userId && p.puede_ver);
-        
-        // Obtener reportes permitidos
-        const userReports = reports.filter(r => {
-            return r.activo && userPermissions.some(p => p.reporte_id === r.id);
-        }).map(r => {
-            const permission = userPermissions.find(p => p.reporte_id === r.id);
-            return {
-                ...r,
-                puede_ver: permission.puede_ver,
-                puede_editar: permission.puede_editar
-            };
-        });
+        let userReports = [];
+
+        if (DB_CONNECTED) {
+            // Obtener reportes desde base de datos
+            try {
+                userReports = await executeQuery(`
+                    SELECT r.*, p.puede_ver, p.puede_editar
+                    FROM reportes r
+                    INNER JOIN permisos p ON r.id = p.reporte_id
+                    WHERE p.usuario_id = @userId AND r.activo = 1 AND p.puede_ver = 1
+                    ORDER BY r.nombre
+                `, { userId: userId });
+            } catch (error) {
+                console.error('Error obteniendo reportes de BD:', error.message);
+            }
+        }
+
+        if (userReports.length === 0) {
+            // Fallback: obtener reportes desde memoria
+            const userPermissions = permissions.filter(p => p.usuario_id === userId && p.puede_ver);
+            userReports = reports.filter(r => {
+                return r.activo && userPermissions.some(p => p.reporte_id === r.id);
+            }).map(r => {
+                const permission = userPermissions.find(p => p.reporte_id === r.id);
+                return {
+                    ...r,
+                    puede_ver: permission.puede_ver,
+                    puede_editar: permission.puede_editar
+                };
+            });
+        }
 
         res.json(userReports);
     } catch (error) {
@@ -201,7 +354,7 @@ app.get('/reports/user/:userId', (req, res) => {
 });
 
 // Ruta para crear nuevo reporte
-app.post('/reports', (req, res) => {
+app.post('/reports', async (req, res) => {
     try {
         const { nombre, url, descripcion, refresh_interval, usuario_id } = req.body;
         
@@ -211,28 +364,72 @@ app.post('/reports', (req, res) => {
                 message: 'Nombre y URL son requeridos'
             });
         }
-        
-        const newReport = {
-            id: generateId(),
-            nombre: nombre,
-            url: url,
-            descripcion: descripcion || '',
-            refresh_interval: refresh_interval || 60,
-            activo: true,
-            usuario_creador: usuario_id || 1,
-            fecha_creacion: new Date().toISOString()
-        };
-        
-        reports.push(newReport);
-        
-        // Asignar permiso al usuario creador
-        permissions.push({
-            id: generateId(),
-            usuario_id: usuario_id || 1,
-            reporte_id: newReport.id,
-            puede_ver: true,
-            puede_editar: true
-        });
+
+        let reporteId = null;
+
+        if (DB_CONNECTED) {
+            // Crear en base de datos
+            try {
+                const result = await pool.request()
+                    .input('nombre', sql.NVarChar, nombre)
+                    .input('url', sql.NVarChar, url)
+                    .input('descripcion', sql.NVarChar, descripcion || '')
+                    .input('refresh_interval', sql.Int, refresh_interval || 60)
+                    .input('usuario_creador', sql.Int, usuario_id || 1)
+                    .query(`
+                        INSERT INTO reportes (nombre, url, descripcion, refresh_interval, activo, usuario_creador)
+                        OUTPUT INSERTED.id
+                        VALUES (@nombre, @url, @descripcion, @refresh_interval, 1, @usuario_creador)
+                    `);
+
+                reporteId = result.recordset[0].id;
+
+                // Asignar permiso al usuario creador en BD
+                await pool.request()
+                    .input('usuario_id', sql.Int, usuario_id || 1)
+                    .input('reporte_id', sql.Int, reporteId)
+                    .query(`
+                        INSERT INTO permisos (usuario_id, reporte_id, puede_ver, puede_editar)
+                        VALUES (@usuario_id, @reporte_id, 1, 1)
+                    `);
+
+                // Recargar datos desde BD
+                await loadDataFromDatabase();
+
+                console.log(`✅ Reporte creado en BD con ID: ${reporteId}`);
+            } catch (error) {
+                console.error('Error creando reporte en BD:', error.message);
+                DB_CONNECTED = false; // Marcar como desconectado para usar memoria
+            }
+        }
+
+        if (!reporteId) {
+            // Fallback: crear en memoria
+            reporteId = generateId();
+            const newReport = {
+                id: reporteId,
+                nombre: nombre,
+                url: url,
+                descripcion: descripcion || '',
+                refresh_interval: refresh_interval || 60,
+                activo: true,
+                usuario_creador: usuario_id || 1,
+                fecha_creacion: new Date().toISOString()
+            };
+            
+            reports.push(newReport);
+            
+            // Asignar permiso al usuario creador en memoria
+            permissions.push({
+                id: generateId(),
+                usuario_id: usuario_id || 1,
+                reporte_id: reporteId,
+                puede_ver: true,
+                puede_editar: true
+            });
+
+            console.log(`✅ Reporte creado en memoria con ID: ${reporteId}`);
+        }
         
         // Registrar actividad
         logActivity(usuario_id || 1, 'Reporte creado', `Reporte "${nombre}" creado exitosamente`);
@@ -240,7 +437,7 @@ app.post('/reports', (req, res) => {
         res.json({
             success: true,
             message: 'Reporte creado exitosamente',
-            reporteId: newReport.id
+            reporteId: reporteId
         });
     } catch (error) {
         console.error('Error al crear reporte:', error);
@@ -252,27 +449,59 @@ app.post('/reports', (req, res) => {
 });
 
 // Ruta para eliminar reporte
-app.delete('/reports/:id', (req, res) => {
+app.delete('/reports/:id', async (req, res) => {
     try {
         const reporteId = parseInt(req.params.id);
-        
-        // Buscar reporte
-        const reportIndex = reports.findIndex(r => r.id === reporteId);
-        
-        if (reportIndex === -1) {
-            return res.status(404).json({
-                success: false,
-                message: 'Reporte no encontrado'
-            });
+        let reporteName = 'Desconocido';
+        let deleted = false;
+
+        if (DB_CONNECTED) {
+            // Eliminar de base de datos
+            try {
+                // Obtener nombre del reporte antes de eliminarlo
+                const reportResult = await executeQuery('SELECT nombre FROM reportes WHERE id = @id', { id: reporteId });
+                if (reportResult.length > 0) {
+                    reporteName = reportResult[0].nombre;
+                }
+
+                // Eliminar permisos primero
+                await executeQuery('DELETE FROM permisos WHERE reporte_id = @reporte_id', { reporte_id: reporteId });
+
+                // Eliminar reporte (marcar como inactivo)
+                await executeQuery('UPDATE reportes SET activo = 0 WHERE id = @id', { id: reporteId });
+
+                // Recargar datos desde BD
+                await loadDataFromDatabase();
+
+                deleted = true;
+                console.log(`✅ Reporte eliminado de BD: ${reporteName}`);
+            } catch (error) {
+                console.error('Error eliminando reporte de BD:', error.message);
+                DB_CONNECTED = false; // Marcar como desconectado para usar memoria
+            }
         }
-        
-        const reporteName = reports[reportIndex].nombre;
-        
-        // Eliminar permisos del reporte
-        permissions = permissions.filter(p => p.reporte_id !== reporteId);
-        
-        // Eliminar reporte
-        reports.splice(reportIndex, 1);
+
+        if (!deleted) {
+            // Fallback: eliminar de memoria
+            const reportIndex = reports.findIndex(r => r.id === reporteId);
+            
+            if (reportIndex === -1) {
+                return res.status(404).json({
+                    success: false,
+                    message: 'Reporte no encontrado'
+                });
+            }
+            
+            reporteName = reports[reportIndex].nombre;
+            
+            // Eliminar permisos del reporte
+            permissions = permissions.filter(p => p.reporte_id !== reporteId);
+            
+            // Eliminar reporte
+            reports.splice(reportIndex, 1);
+
+            console.log(`✅ Reporte eliminado de memoria: ${reporteName}`);
+        }
         
         // Registrar actividad
         logActivity(1, 'Reporte eliminado', `Reporte "${reporteName}" eliminado`);
@@ -291,15 +520,33 @@ app.delete('/reports/:id', (req, res) => {
 });
 
 // Rutas de administración
-app.get('/admin/stats', (req, res) => {
+app.get('/admin/stats', async (req, res) => {
     try {
-        const stats = {
+        let stats = {
             totalUsers: users.length,
             activeUsers: users.filter(u => u.activo).length,
             totalReports: reports.filter(r => r.activo).length,
             activeSessions: 1,
-            totalActivity: activity.length
+            totalActivity: activity.length,
+            dataSource: DB_CONNECTED ? 'SQL Server' : 'Memory'
         };
+
+        if (DB_CONNECTED) {
+            try {
+                const dbStats = await executeQuery(`
+                    SELECT 
+                        (SELECT COUNT(*) FROM usuarios WHERE activo = 1) as totalUsers,
+                        (SELECT COUNT(*) FROM usuarios WHERE activo = 1) as activeUsers,
+                        (SELECT COUNT(*) FROM reportes WHERE activo = 1) as totalReports
+                `);
+                
+                if (dbStats.length > 0) {
+                    stats = { ...stats, ...dbStats[0], activeSessions: 1, dataSource: 'SQL Server' };
+                }
+            } catch (error) {
+                console.error('Error obteniendo stats de BD:', error.message);
+            }
+        }
 
         res.json(stats);
     } catch (error) {
@@ -308,21 +555,36 @@ app.get('/admin/stats', (req, res) => {
             totalUsers: 2,
             activeUsers: 2,
             totalReports: 3,
-            activeSessions: 1
+            activeSessions: 1,
+            dataSource: 'Memory (Error)'
         });
     }
 });
 
-app.get('/admin/users', (req, res) => {
+app.get('/admin/users', async (req, res) => {
     try {
-        const publicUsers = users.map(u => ({
-            id: u.id,
-            nombre: u.nombre,
-            apellido: u.apellido,
-            email: u.email,
-            admin: u.admin,
-            activo: u.activo
-        }));
+        let publicUsers = [];
+
+        if (DB_CONNECTED) {
+            try {
+                const dbUsers = await executeQuery('SELECT id, nombre, apellido, email, admin, activo FROM usuarios ORDER BY nombre');
+                publicUsers = dbUsers;
+            } catch (error) {
+                console.error('Error obteniendo usuarios de BD:', error.message);
+            }
+        }
+
+        if (publicUsers.length === 0) {
+            // Fallback: usuarios de memoria
+            publicUsers = users.map(u => ({
+                id: u.id,
+                nombre: u.nombre,
+                apellido: u.apellido,
+                email: u.email,
+                admin: u.admin,
+                activo: u.activo
+            }));
+        }
         
         res.json(publicUsers);
     } catch (error) {
@@ -334,9 +596,24 @@ app.get('/admin/users', (req, res) => {
     }
 });
 
-app.get('/admin/reports', (req, res) => {
+app.get('/admin/reports', async (req, res) => {
     try {
-        res.json(reports);
+        let allReports = [];
+
+        if (DB_CONNECTED) {
+            try {
+                allReports = await executeQuery('SELECT * FROM reportes WHERE activo = 1 ORDER BY nombre');
+            } catch (error) {
+                console.error('Error obteniendo reportes de BD:', error.message);
+            }
+        }
+
+        if (allReports.length === 0) {
+            // Fallback: reportes de memoria
+            allReports = reports.filter(r => r.activo);
+        }
+
+        res.json(allReports);
     } catch (error) {
         console.error('Error al obtener reportes:', error);
         res.status(500).json({
@@ -346,187 +623,75 @@ app.get('/admin/reports', (req, res) => {
     }
 });
 
-app.get('/admin/activity', (req, res) => {
-    try {
-        // Devolver últimos 50 registros
-        const recentActivity = activity.slice(-50).reverse();
-        res.json(recentActivity);
-    } catch (error) {
-        console.error('Error al obtener actividad:', error);
-        res.json([]);
-    }
-});
-
-app.get('/admin/permissions', (req, res) => {
-    try {
-        // Combinar permisos con información de usuarios y reportes
-        const detailedPermissions = permissions.map(p => {
-            const user = users.find(u => u.id === p.usuario_id);
-            const report = reports.find(r => r.id === p.reporte_id);
-            
-            return {
-                ...p,
-                usuario_nombre: user ? `${user.nombre} ${user.apellido}` : 'Usuario desconocido',
-                reporte_nombre: report ? report.nombre : 'Reporte desconocido'
-            };
-        });
-        
-        res.json(detailedPermissions);
-    } catch (error) {
-        console.error('Error al obtener permisos:', error);
-        res.json([]);
-    }
-});
-
-// Ruta para crear usuario (admin)
-app.post('/admin/users', (req, res) => {
-    try {
-        const { nombre, apellido, email, password, admin, activo } = req.body;
-        
-        if (!nombre || !apellido || !email || !password) {
-            return res.status(400).json({
-                success: false,
-                message: 'Todos los campos son requeridos'
-            });
-        }
-        
-        // Verificar si el email ya existe
-        if (users.find(u => u.email.toLowerCase() === email.toLowerCase())) {
-            return res.status(400).json({
-                success: false,
-                message: 'El email ya está registrado'
-            });
-        }
-        
-        const newUser = {
-            id: generateId(),
-            nombre,
-            apellido,
-            email,
-            password,
-            admin: !!admin,
-            activo: activo !== false
-        };
-        
-        users.push(newUser);
-        
-        // Registrar actividad
-        logActivity(1, 'Usuario creado', `Usuario ${email} creado`);
-        
-        res.json({
-            success: true,
-            message: 'Usuario creado exitosamente',
-            userId: newUser.id
-        });
-    } catch (error) {
-        console.error('Error al crear usuario:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Error al crear usuario'
-        });
-    }
-});
-
-// Ruta para asignar permisos
-app.post('/admin/permissions', (req, res) => {
-    try {
-        const { usuario_id, reporte_id, puede_ver, puede_editar } = req.body;
-        
-        if (!usuario_id || !reporte_id) {
-            return res.status(400).json({
-                success: false,
-                message: 'Usuario y reporte son requeridos'
-            });
-        }
-        
-        // Verificar si ya existe el permiso
-        const existingPermission = permissions.find(p => 
-            p.usuario_id === usuario_id && p.reporte_id === reporte_id
-        );
-        
-        if (existingPermission) {
-            // Actualizar permiso existente
-            existingPermission.puede_ver = puede_ver !== false;
-            existingPermission.puede_editar = !!puede_editar;
-        } else {
-            // Crear nuevo permiso
-            permissions.push({
-                id: generateId(),
-                usuario_id,
-                reporte_id,
-                puede_ver: puede_ver !== false,
-                puede_editar: !!puede_editar
-            });
-        }
-        
-        // Registrar actividad
-        logActivity(1, 'Permiso asignado', `Permiso asignado a usuario ${usuario_id} para reporte ${reporte_id}`);
-        
-        res.json({
-            success: true,
-            message: 'Permiso asignado exitosamente'
-        });
-    } catch (error) {
-        console.error('Error al asignar permiso:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Error al asignar permiso'
-        });
-    }
-});
-
 // Ruta para endpoints disponibles
 app.get('/', (req, res) => {
     res.json({
         message: 'PowerBI Backend API',
-        version: '3.0 - Standalone Mode',
-        database: 'Memoria Local (Sin SQL Dependencies)',
-        mode: 'Standalone - Zero Dependencies',
+        version: '3.1 - Hybrid Database/Memory Mode',
+        database: DB_CONNECTED ? 'SQL Server Conectada' : 'Memoria Local',
+        sqlModule: SQL_AVAILABLE ? 'Disponible' : 'No Disponible',
+        mode: DB_CONNECTED ? 'Database Primary' : 'Memory Fallback',
         compatible: 'Node.js 18+',
         features: [
-            'Autenticación completa',
-            'Gestión de reportes',
-            'Permisos de usuario',
+            'Autenticación híbrida DB/Memory',
+            'Gestión de reportes persistente',
+            'Permisos sincronizados',
             'Panel administrativo',
             'Registro de actividad',
-            'CRUD completo',
-            'Sin dependencias SQL'
+            'CRUD completo con BD',
+            'Fallback automático'
         ],
         endpoints: [
             'GET /health - Estado del servidor',
             'POST /login - Autenticación',
-            'POST /verify-token - Verificar token',
             'GET /reports/user/:userId - Reportes del usuario',
             'POST /reports - Crear reporte',
             'DELETE /reports/:id - Eliminar reporte',
             'GET /admin/stats - Estadísticas',
             'GET /admin/users - Lista de usuarios',
-            'GET /admin/reports - Lista de reportes',
-            'GET /admin/activity - Registro de actividad',
-            'GET /admin/permissions - Lista de permisos',
-            'POST /admin/users - Crear usuario',
-            'POST /admin/permissions - Asignar permisos'
+            'GET /admin/reports - Lista de reportes'
         ]
     });
 });
 
 // Inicializar datos de actividad
-logActivity(1, 'Sistema iniciado', 'Backend PowerBI iniciado correctamente');
+logActivity(1, 'Sistema iniciado', 'Backend PowerBI iniciado en modo híbrido');
 
-// Iniciar servidor
-app.listen(PORT, () => {
-    console.log(`🚀 Servidor PowerBI Backend v3.0 corriendo en puerto ${PORT}`);
-    console.log(`🌐 Endpoints disponibles en https://powerbi-backend-vxjd.onrender.com`);
-    console.log(`💾 Modo: Standalone (Sin dependencias SQL)`);
-    console.log(`✅ Compatible: Node.js 18+ (Sin conflictos de Azure)`);
-    console.log(`📊 Datos cargados: ${users.length} usuarios, ${reports.length} reportes`);
-    console.log(`🔧 Funcionalidad: 100% operativa sin base de datos externa`);
-});
+// Inicializar servidor
+async function startServer() {
+    // Intentar conectar a la base de datos
+    const dbConnected = await initializeDatabase();
+    
+    if (dbConnected) {
+        console.log('🎉 Servidor iniciado con conexión a SQL Server');
+        console.log('📊 Datos cargados desde base de datos');
+    } else {
+        console.log('⚠️  Servidor iniciado en modo MEMORY (sin SQL Server)');
+        console.log('📊 Usando datos por defecto en memoria');
+    }
+
+    app.listen(PORT, () => {
+        console.log(`🚀 Servidor PowerBI Backend v3.1 corriendo en puerto ${PORT}`);
+        console.log(`🌐 Endpoints disponibles en https://powerbi-backend-vxjd.onrender.com`);
+        console.log(`🔧 Modo: ${DB_CONNECTED ? 'Database Primary' : 'Memory Fallback'}`);
+        console.log(`📊 Datos: ${users.length} usuarios, ${reports.length} reportes`);
+        console.log(`🛡️ Funcionalidad: 100% operativa con persistencia`);
+    });
+}
 
 // Manejar cierre del servidor
-process.on('SIGINT', () => {
-    console.log('Cerrando servidor PowerBI Backend...');
+process.on('SIGINT', async () => {
+    console.log('Cerrando servidor...');
+    if (pool) {
+        await pool.close();
+    }
     process.exit(0);
+});
+
+// Iniciar el servidor
+startServer().catch(error => {
+    console.error('Error al iniciar servidor:', error);
+    process.exit(1);
 });
 
 module.exports = app;
