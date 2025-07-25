@@ -1,18 +1,20 @@
 {
-  "name": "powerbi-dashboard-backend",
-  "version": "1.0.0",
-  "description": "Backend para Power BI Dashboard con autenticación y gestión de permisos",
-  "main": "server-render-compatible.js",
+  "name": "powerbi-backend-database",
+  "version": "2.0.0",
+  "description": "PowerBI Backend with SQL Server Database",
+  "main": "server-with-database.js",
+  "scripts": {
+    "start": "node server-with-database.js",
+    "dev": "nodemon server-with-database.js",
+    "init-db": "echo 'Run init-database.sql in SQL Server Management Studio'"
+  },
   "engines": {
     "node": ">=18.0.0"
   },
-  "scripts": {
-    "start": "node server-render-compatible.js",
-    "dev": "node server-render-compatible.js"
-  },
   "dependencies": {
     "express": "^4.18.2",
-    "cors": "^2.8.5"
+    "cors": "^2.8.5",
+    "mssql": "^9.1.1"
   },
   "devDependencies": {
     "nodemon": "^3.0.1"
@@ -20,9 +22,10 @@
   "keywords": [
     "powerbi",
     "dashboard",
-    "authentication",
-    "sql-server"
+    "sql-server",
+    "express",
+    "api"
   ],
-  "author": "PowerBI Team",
+  "author": "PowerBI Dashboard System",
   "license": "MIT"
 }
