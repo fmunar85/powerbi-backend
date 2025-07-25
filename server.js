@@ -517,7 +517,7 @@ logActivity(1, 'Sistema iniciado', 'Backend PowerBI iniciado correctamente');
 app.listen(PORT, () => {
     console.log(`🚀 Servidor PowerBI Backend v3.0 corriendo en puerto ${PORT}`);
     console.log(`🌐 Endpoints disponibles en https://powerbi-backend-vxjd.onrender.com`);
-    console.log(`� Modo: Standalone (Sin dependencias SQL)`);
+    console.log(`💾 Modo: Standalone (Sin dependencias SQL)`);
     console.log(`✅ Compatible: Node.js 18+ (Sin conflictos de Azure)`);
     console.log(`📊 Datos cargados: ${users.length} usuarios, ${reports.length} reportes`);
     console.log(`🔧 Funcionalidad: 100% operativa sin base de datos externa`);
