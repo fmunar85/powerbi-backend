@@ -1,7 +1,7 @@
 {
   "name": "powerbi-backend",
   "version": "1.0.0",
-  "description": "Power BI Dashboard Backend API",
+  "description": "Backend API for Power BI Dashboard Authentication System",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -9,17 +9,24 @@
   },
   "dependencies": {
     "express": "^4.18.2",
-    "cors": "^2.8.5",
-    "helmet": "^7.0.0",
-    "morgan": "^1.10.0",
-    "bcryptjs": "^2.4.3",
-    "jsonwebtoken": "^9.0.0",
     "mssql": "^9.1.1",
+    "cors": "^2.8.5",
+    "jsonwebtoken": "^9.0.0",
     "dotenv": "^16.0.3"
   },
-  "engines": {
-    "node": ">=18.0.0"
+  "devDependencies": {
+    "nodemon": "^2.0.22"
   },
-  "keywords": ["powerbi", "dashboard", "api", "backend"],
-  "license": "MIT"
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "keywords": [
+    "powerbi",
+    "dashboard",
+    "authentication",
+    "api",
+    "express"
+  ],
+  "author": "FMunar",
+  "license": "ISC"
 }
