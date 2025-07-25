@@ -2,10 +2,10 @@
   "name": "powerbi-backend-database",
   "version": "2.0.0",
   "description": "PowerBI Backend with SQL Server Database",
-  "main": "server-with-database.js",
+  "main": "server.js",
   "scripts": {
-    "start": "node server-with-database.js",
-    "dev": "nodemon server-with-database.js",
+    "start": "node server.js",
+    "dev": "nodemon server.js",
     "init-db": "echo 'Run init-database.sql in SQL Server Management Studio'"
   },
   "engines": {
@@ -14,10 +14,7 @@
   "dependencies": {
     "express": "^4.18.2",
     "cors": "^2.8.5",
-    "mssql": "^9.1.1"
-  },
-  "devDependencies": {
-    "nodemon": "^3.0.1"
+    "mssql": "^8.1.4"
   },
   "keywords": [
     "powerbi",
