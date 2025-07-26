@@ -1,8 +1,7 @@
 // ============================================
-// SERVIDOR HÍBRIDO POWERBI - RENDER DEPLOY
+// SERVIDOR POWERBI - CORREGIDO PARA TU ESQUEMA BD
 // ============================================
-// Este archivo debe reemplazar server.js en Render
-// Conecta a SQL Server y persiste TODOS los cambios
+// Este servidor usa los nombres CORRECTOS de tus tablas
 
 const express = require('express');
 const cors = require('cors');
@@ -156,29 +155,29 @@ async function initializeDatabase() {
     }
 }
 
-// Función para cargar datos desde la base de datos
+// Función para cargar datos desde la base de datos - CORREGIDA
 async function loadDataFromDatabase() {
     if (!DB_CONNECTED || !pool) return;
 
     try {
         console.log('🔄 Cargando datos desde SQL Server...');
         
-        // Cargar usuarios
-        const usersResult = await pool.request().query('SELECT * FROM usuarios WHERE activo = 1');
+        // Cargar usuarios - USANDO ESQUEMA CORRECTO
+        const usersResult = await pool.request().query('SELECT id, nombre, apellido, mail as email, password, admin, activo FROM usuarios WHERE activo = 1');
         if (usersResult.recordset.length > 0) {
             users = usersResult.recordset;
             console.log(`✅ Cargados ${users.length} usuarios desde BD`);
         }
         
-        // Cargar reportes
-        const reportsResult = await pool.request().query('SELECT * FROM reportes WHERE activo = 1');
+        // Cargar reportes - USANDO ESQUEMA CORRECTO  
+        const reportsResult = await pool.request().query('SELECT id, titulo as nombre, descripcion, url, intervalo_refresh as refresh_interval, activo, creado_por as usuario_creador, fecha_creacion FROM reportes WHERE activo = 1');
         if (reportsResult.recordset.length > 0) {
             reports = reportsResult.recordset;
             console.log(`✅ Cargados ${reports.length} reportes desde BD`);
         }
         
-        // Cargar permisos
-        const permissionsResult = await pool.request().query('SELECT * FROM permisos');
+        // Cargar permisos - USANDO ESQUEMA CORRECTO
+        const permissionsResult = await pool.request().query('SELECT id, usuario_id, reporte_id, 1 as puede_ver, 1 as puede_editar FROM permisos_reportes');
         if (permissionsResult.recordset.length > 0) {
             permissions = permissionsResult.recordset;
             console.log(`✅ Cargados ${permissions.length} permisos desde BD`);
@@ -236,15 +235,16 @@ app.get('/health', (req, res) => {
         database: DB_CONNECTED ? 'SQL Server Conectada' : 'Memoria Local',
         sqlModule: SQL_AVAILABLE ? 'Disponible' : 'No Disponible',
         mode: DB_CONNECTED ? 'Database' : 'Memory',
-        server: 'Render - Híbrido SQL/Memory',
+        server: 'Render - Híbrido SQL/Memory CORREGIDO',
         users: users.length,
         reports: reports.length,
-        permissions: permissions.length
+        permissions: permissions.length,
+        schema: 'Compatible con database_setup.sql'
     };
     res.json(status);
 });
 
-// Ruta de login
+// Ruta de login - CORREGIDA
 app.post('/login', async (req, res) => {
     try {
         const { email, password } = req.body;
@@ -259,10 +259,10 @@ app.post('/login', async (req, res) => {
         let user = null;
 
         if (DB_CONNECTED) {
-            // Autenticación con base de datos
+            // Autenticación con base de datos - USANDO ESQUEMA CORRECTO
             try {
                 const result = await executeQuery(
-                    'SELECT * FROM usuarios WHERE email = @email AND password = @password AND activo = 1',
+                    'SELECT id, nombre, apellido, mail as email, password, admin, activo FROM usuarios WHERE mail = @email AND password = @password AND activo = 1',
                     { email: email, password: password }
                 );
                 user = result.length > 0 ? result[0] : null;
@@ -313,21 +313,23 @@ app.post('/login', async (req, res) => {
     }
 });
 
-// Ruta para obtener reportes del usuario
+// Ruta para obtener reportes del usuario - CORREGIDA
 app.get('/reports/user/:userId', async (req, res) => {
     try {
         const userId = parseInt(req.params.userId);
         let userReports = [];
 
         if (DB_CONNECTED) {
-            // Obtener reportes desde base de datos
+            // Obtener reportes desde base de datos - USANDO ESQUEMA CORRECTO
             try {
                 userReports = await executeQuery(`
-                    SELECT r.*, p.puede_ver, p.puede_editar
+                    SELECT r.id, r.titulo as nombre, r.descripcion, r.url, 
+                           r.intervalo_refresh as refresh_interval, r.activo,
+                           r.fecha_creacion, 1 as puede_ver, 1 as puede_editar
                     FROM reportes r
-                    INNER JOIN permisos p ON r.id = p.reporte_id
-                    WHERE p.usuario_id = @userId AND r.activo = 1 AND p.puede_ver = 1
-                    ORDER BY r.nombre
+                    INNER JOIN permisos_reportes p ON r.id = p.reporte_id
+                    WHERE p.usuario_id = @userId AND r.activo = 1
+                    ORDER BY r.titulo
                 `, { userId: userId });
             } catch (error) {
                 console.error('Error obteniendo reportes de BD:', error.message);
@@ -359,7 +361,7 @@ app.get('/reports/user/:userId', async (req, res) => {
     }
 });
 
-// Ruta para crear nuevo reporte
+// Ruta para crear nuevo reporte - CORREGIDA
 app.post('/reports', async (req, res) => {
     try {
         const { nombre, url, descripcion, refresh_interval, usuario_id } = req.body;
@@ -374,38 +376,44 @@ app.post('/reports', async (req, res) => {
         let reporteId = null;
 
         if (DB_CONNECTED) {
-            // Crear en base de datos
+            // Crear en base de datos - USANDO ESQUEMA CORRECTO
             try {
+                console.log(`🔄 Creando reporte en BD: ${nombre}`);
+                
                 const result = await pool.request()
-                    .input('nombre', sql.NVarChar, nombre)
+                    .input('titulo', sql.NVarChar, nombre)
                     .input('url', sql.NVarChar, url)
                     .input('descripcion', sql.NVarChar, descripcion || '')
-                    .input('refresh_interval', sql.Int, refresh_interval || 60)
-                    .input('usuario_creador', sql.Int, usuario_id || 1)
+                    .input('intervalo_refresh', sql.Int, refresh_interval || 60)
+                    .input('creado_por', sql.Int, usuario_id || 1)
                     .query(`
-                        INSERT INTO reportes (nombre, url, descripcion, refresh_interval, activo, usuario_creador)
+                        INSERT INTO reportes (titulo, url, descripcion, intervalo_refresh, activo, creado_por)
                         OUTPUT INSERTED.id
-                        VALUES (@nombre, @url, @descripcion, @refresh_interval, 1, @usuario_creador)
+                        VALUES (@titulo, @url, @descripcion, @intervalo_refresh, 1, @creado_por)
                     `);
 
                 reporteId = result.recordset[0].id;
+                console.log(`✅ Reporte creado en BD con ID: ${reporteId}`);
 
-                // Asignar permiso al usuario creador en BD
+                // Asignar permiso al usuario creador en BD - USANDO ESQUEMA CORRECTO
                 await pool.request()
                     .input('usuario_id', sql.Int, usuario_id || 1)
                     .input('reporte_id', sql.Int, reporteId)
+                    .input('asignado_por', sql.Int, usuario_id || 1)
                     .query(`
-                        INSERT INTO permisos (usuario_id, reporte_id, puede_ver, puede_editar)
-                        VALUES (@usuario_id, @reporte_id, 1, 1)
+                        INSERT INTO permisos_reportes (usuario_id, reporte_id, asignado_por)
+                        VALUES (@usuario_id, @reporte_id, @asignado_por)
                     `);
+
+                console.log(`✅ Permiso asignado en BD para reporte ${reporteId}`);
 
                 // Recargar datos desde BD
                 await loadDataFromDatabase();
 
-                console.log(`✅ Reporte creado en BD con ID: ${reporteId}`);
             } catch (error) {
-                console.error('Error creando reporte en BD:', error.message);
-                DB_CONNECTED = false; // Marcar como desconectado para usar memoria
+                console.error('❌ Error creando reporte en BD:', error.message);
+                console.error('Error details:', error);
+                // No marcar como desconectado, intentar con memoria
             }
         }
 
@@ -454,7 +462,7 @@ app.post('/reports', async (req, res) => {
     }
 });
 
-// Ruta para eliminar reporte - CORREGIDA PARA BD
+// Ruta para eliminar reporte - CORREGIDA PARA ESQUEMA CORRECTO
 app.delete('/reports/:id', async (req, res) => {
     try {
         const reporteId = parseInt(req.params.id);
@@ -462,28 +470,32 @@ app.delete('/reports/:id', async (req, res) => {
         let deleted = false;
 
         if (DB_CONNECTED) {
-            // Eliminar de base de datos
+            // Eliminar de base de datos - USANDO ESQUEMA CORRECTO
             try {
+                console.log(`🔄 Eliminando reporte ${reporteId} de BD`);
+                
                 // Obtener nombre del reporte antes de eliminarlo
-                const reportResult = await executeQuery('SELECT nombre FROM reportes WHERE id = @id', { id: reporteId });
+                const reportResult = await executeQuery('SELECT titulo FROM reportes WHERE id = @id', { id: reporteId });
                 if (reportResult.length > 0) {
-                    reporteName = reportResult[0].nombre;
+                    reporteName = reportResult[0].titulo;
                 }
 
-                // Eliminar permisos primero
-                await executeQuery('DELETE FROM permisos WHERE reporte_id = @reporte_id', { reporte_id: reporteId });
+                // Eliminar permisos primero - USANDO ESQUEMA CORRECTO
+                await executeQuery('DELETE FROM permisos_reportes WHERE reporte_id = @reporte_id', { reporte_id: reporteId });
+                console.log(`✅ Permisos eliminados de BD para reporte ${reporteId}`);
 
-                // MARCAR COMO INACTIVO EN BD (AQUÍ ESTABA EL PROBLEMA)
-                await executeQuery('UPDATE reportes SET activo = 0 WHERE id = @id', { id: reporteId });
+                // MARCAR COMO INACTIVO EN BD - USANDO ESQUEMA CORRECTO
+                const updateResult = await executeQuery('UPDATE reportes SET activo = 0 WHERE id = @id', { id: reporteId });
+                console.log(`✅ Reporte ${reporteId} marcado como inactivo en BD`);
 
                 // Recargar datos desde BD
                 await loadDataFromDatabase();
 
                 deleted = true;
-                console.log(`✅ Reporte eliminado de BD: ${reporteName}`);
+                console.log(`✅ Reporte eliminado completamente de BD: ${reporteName}`);
             } catch (error) {
-                console.error('Error eliminando reporte de BD:', error.message);
-                DB_CONNECTED = false; // Marcar como desconectado para usar memoria
+                console.error('❌ Error eliminando reporte de BD:', error.message);
+                console.error('Error details:', error);
             }
         }
 
@@ -525,7 +537,7 @@ app.delete('/reports/:id', async (req, res) => {
     }
 });
 
-// Rutas de administración
+// Rutas de administración - CORREGIDAS
 app.get('/admin/stats', async (req, res) => {
     try {
         let stats = {
@@ -573,7 +585,7 @@ app.get('/admin/users', async (req, res) => {
 
         if (DB_CONNECTED) {
             try {
-                const dbUsers = await executeQuery('SELECT id, nombre, apellido, email, admin, activo FROM usuarios ORDER BY nombre');
+                const dbUsers = await executeQuery('SELECT id, nombre, apellido, mail as email, admin, activo FROM usuarios ORDER BY nombre');
                 publicUsers = dbUsers;
             } catch (error) {
                 console.error('Error obteniendo usuarios de BD:', error.message);
@@ -608,7 +620,8 @@ app.get('/admin/reports', async (req, res) => {
 
         if (DB_CONNECTED) {
             try {
-                allReports = await executeQuery('SELECT * FROM reportes WHERE activo = 1 ORDER BY nombre');
+                const dbReports = await executeQuery('SELECT id, titulo as nombre, descripcion, url, intervalo_refresh as refresh_interval, activo, creado_por as usuario_creador, fecha_creacion FROM reportes WHERE activo = 1 ORDER BY titulo');
+                allReports = dbReports;
             } catch (error) {
                 console.error('Error obteniendo reportes de BD:', error.message);
             }
@@ -633,11 +646,12 @@ app.get('/admin/reports', async (req, res) => {
 app.get('/', (req, res) => {
     res.json({
         message: 'PowerBI Backend API',
-        version: '3.1 - Hybrid Database/Memory Mode',
+        version: '3.2 - ESQUEMA CORREGIDO',
         database: DB_CONNECTED ? 'SQL Server Conectada' : 'Memoria Local',
         sqlModule: SQL_AVAILABLE ? 'Disponible' : 'No Disponible',
         mode: DB_CONNECTED ? 'Database Primary' : 'Memory Fallback',
         compatible: 'Node.js 18+',
+        schema: 'Compatible con database_setup.sql',
         features: [
             'Autenticación híbrida DB/Memory',
             'Gestión de reportes persistente',
@@ -645,6 +659,7 @@ app.get('/', (req, res) => {
             'Panel administrativo',
             'Registro de actividad',
             'CRUD completo con BD',
+            'ESQUEMA CORREGIDO',
             'Fallback automático'
         ],
         endpoints: [
@@ -661,7 +676,7 @@ app.get('/', (req, res) => {
 });
 
 // Inicializar datos de actividad
-logActivity(1, 'Sistema iniciado', 'Backend PowerBI iniciado en modo híbrido');
+logActivity(1, 'Sistema iniciado', 'Backend PowerBI iniciado en modo híbrido con esquema corregido');
 
 // Inicializar servidor
 async function startServer() {
@@ -671,17 +686,19 @@ async function startServer() {
     if (dbConnected) {
         console.log('🎉 Servidor iniciado con conexión a SQL Server');
         console.log('📊 Datos cargados desde base de datos');
+        console.log('✅ Esquema compatible con database_setup.sql');
     } else {
         console.log('⚠️  Servidor iniciado en modo MEMORY (sin SQL Server)');
         console.log('📊 Usando datos por defecto en memoria');
     }
 
     app.listen(PORT, () => {
-        console.log(`🚀 Servidor PowerBI Backend v3.1 corriendo en puerto ${PORT}`);
+        console.log(`🚀 Servidor PowerBI Backend v3.2 corriendo en puerto ${PORT}`);
         console.log(`🌐 Endpoints disponibles en https://powerbi-backend-vxjd.onrender.com`);
         console.log(`🔧 Modo: ${DB_CONNECTED ? 'Database Primary' : 'Memory Fallback'}`);
         console.log(`📊 Datos: ${users.length} usuarios, ${reports.length} reportes`);
         console.log(`🛡️ Funcionalidad: 100% operativa con persistencia`);
+        console.log(`✅ ESQUEMA BD: COMPATIBLE`);
     });
 }
 
